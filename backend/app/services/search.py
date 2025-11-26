@@ -2,7 +2,7 @@ import os
 import httpx
 import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import asyncio
 
 logger = logging.getLogger(__name__)
