@@ -13,9 +13,6 @@ class SearchService:
     def __init__(self):
         self.serpapi_key = os.getenv("SERPAPI_KEY")
         self.bing_key = os.getenv("BING_SEARCH_KEY")
-        # USE_SGPBUSINESS: "true" = use sgpbusiness.com only, "false" = API only (default)
-        # Note: SGPBusiness is blocked by Cloudflare, so we default to API search
-        self.use_sgpbusiness = os.getenv("USE_SGPBUSINESS", "false").lower()
 
     async def search_company_website(
         self,
@@ -24,7 +21,7 @@ class SearchService:
         address: str
     ) -> Optional[str]:
         """
-        Search for company website using available search methods
+        Search for company website using API search (SerpAPI or Bing)
 
         Args:
             company_name: Name of the company
@@ -35,115 +32,29 @@ class SearchService:
             Company website URL if found, None otherwise
         """
         logger.info(f"Starting website search for: {company_name} (UEN: {uen})")
-        logger.info(f"Search mode: {'SGPBusiness only' if self.use_sgpbusiness == 'true' else 'API search (SerpAPI/Bing)'}")
 
-        # Strategy 1: Try API search first (SerpAPI/Bing) - Primary method
-        if self.use_sgpbusiness != "true":
-            # Try SerpAPI
-            if self.serpapi_key:
-                logger.info("Using SerpAPI to find company website...")
-                website = await self._search_with_serpapi(company_name, uen)
-                if website:
-                    logger.info(f"✓ Found website via SerpAPI: {website}")
-                    return website
-                else:
-                    logger.warning("SerpAPI search returned no results")
-
-            # Fallback to Bing if available
-            if self.bing_key:
-                logger.info("Falling back to Bing Search API...")
-                website = await self._search_with_bing(company_name, uen)
-                if website:
-                    logger.info(f"✓ Found website via Bing: {website}")
-                    return website
-                else:
-                    logger.warning("Bing search returned no results")
-
-        # Strategy 2: SGPBusiness (only if explicitly enabled, but it's blocked by Cloudflare)
-        if self.use_sgpbusiness == "true":
-            logger.warning("SGPBusiness mode enabled, but note: site is blocked by Cloudflare")
-            sgp_url = self._construct_sgpbusiness_url(company_name)
-            if sgp_url:
-                logger.info(f"Trying SGPBusiness.com: {sgp_url}")
-                return sgp_url
-
-        logger.error(f"Failed to find website for {company_name} - no search methods succeeded")
-        return None
-
-    async def search_with_api_fallback(
-        self,
-        company_name: str,
-        uen: str,
-        address: str
-    ) -> Optional[str]:
-        """
-        Search using only API methods (bypass SGPBusiness)
-        Used as fallback when SGPBusiness is blocked by Cloudflare
-
-        Args:
-            company_name: Name of the company
-            uen: UEN number
-            address: Company address
-
-        Returns:
-            Company website URL if found, None otherwise
-        """
-        # Try SerpAPI
+        # Try SerpAPI first
         if self.serpapi_key:
+            logger.info("Using SerpAPI to find company website...")
             website = await self._search_with_serpapi(company_name, uen)
             if website:
+                logger.info(f"✓ Found website via SerpAPI: {website}")
                 return website
+            else:
+                logger.warning("SerpAPI search returned no results")
 
-        # Fallback to Bing if available
+        # Fallback to Bing if SerpAPI fails or unavailable
         if self.bing_key:
+            logger.info("Falling back to Bing Search API...")
             website = await self._search_with_bing(company_name, uen)
             if website:
+                logger.info(f"✓ Found website via Bing: {website}")
                 return website
+            else:
+                logger.warning("Bing search returned no results")
 
+        logger.error(f"Failed to find website for {company_name} - no search API keys configured or no results found")
         return None
-
-    def _construct_sgpbusiness_url(self, company_name: str) -> Optional[str]:
-        """
-        Construct direct SGPBusiness.com URL from company name
-
-        Examples:
-            "AMERICAN LLOYD TRAVEL SERVICES PTE LTD" ->
-            "https://www.sgpbusiness.com/company/American-Lloyd-Travel-Services-Pte-Ltd"
-
-            "ARCHIPELAGO BREWERY CO. (1941) PTE. LIMITED" ->
-            "https://www.sgpbusiness.com/company/Archipelago-Brewery-Co-1941-Pte-Limited"
-
-        Args:
-            company_name: Company name to format
-
-        Returns:
-            SGPBusiness.com URL
-        """
-        if not company_name:
-            return None
-
-        # Clean and format the company name
-        formatted_name = company_name.strip()
-
-        # Replace multiple spaces with single space
-        formatted_name = re.sub(r'\s+', ' ', formatted_name)
-
-        # Title case each word
-        formatted_name = formatted_name.title()
-
-        # Replace spaces with hyphens
-        formatted_name = formatted_name.replace(' ', '-')
-
-        # Handle special characters:
-        # Keep: periods, parentheses, numbers
-        # Remove: commas, apostrophes, ampersands
-        formatted_name = formatted_name.replace(',', '')
-        formatted_name = formatted_name.replace("'", '')
-        formatted_name = formatted_name.replace('&', 'And')
-
-        # Construct URL
-        base_url = "https://www.sgpbusiness.com/company/"
-        return base_url + formatted_name
 
     async def _search_with_serpapi(
         self,
