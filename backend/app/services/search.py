@@ -240,11 +240,13 @@ class SearchService:
         logger.info(f"Total results returned: {len(organic_results)}")
         logger.info(f"{'='*80}")
 
-        # Skip common non-company sites
+        # Skip common non-company sites and directory sites
         excluded_domains = [
             'facebook.com', 'linkedin.com', 'instagram.com',
             'twitter.com', 'youtube.com', 'wikipedia.org',
-            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com'
+            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com',
+            'sgpbusiness.com', 'companies.sg', 'recordowl.com',
+            'ltddir.com', 'sgpgrid.com', 'tellme.sg'
         ]
 
         # Display all results first
@@ -327,10 +329,13 @@ class SearchService:
         """
         web_pages = data.get("webPages", {}).get("value", [])
 
+        # Skip common non-company sites and directory sites
         excluded_domains = [
             'facebook.com', 'linkedin.com', 'instagram.com',
             'twitter.com', 'youtube.com', 'wikipedia.org',
-            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com'
+            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com',
+            'sgpbusiness.com', 'companies.sg', 'recordowl.com',
+            'ltddir.com', 'sgpgrid.com', 'tellme.sg'
         ]
 
         for page in web_pages:
