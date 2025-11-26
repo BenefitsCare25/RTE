@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: company-enrichment-api
+    env: python
+    region: oregon
+    buildCommand: pip install -r requirements.txt && playwright install chromium
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: SERPAPI_KEY
+        sync: false
+      - key: BING_SEARCH_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: production
