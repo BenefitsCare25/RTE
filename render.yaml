@@ -7,7 +7,7 @@ services:
     dockerfilePath: ./Dockerfile
     envVars:
       - key: USE_SGPBUSINESS
-        value: hybrid
+        value: false
       - key: SERPAPI_KEY
         sync: false
       - key: BING_SEARCH_KEY

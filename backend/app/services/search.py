@@ -13,8 +13,9 @@ class SearchService:
     def __init__(self):
         self.serpapi_key = os.getenv("SERPAPI_KEY")
         self.bing_key = os.getenv("BING_SEARCH_KEY")
-        # USE_SGPBUSINESS: "true" = use sgpbusiness.com only, "hybrid" = try sgpbusiness first then API, "false" = API only
-        self.use_sgpbusiness = os.getenv("USE_SGPBUSINESS", "hybrid").lower()
+        # USE_SGPBUSINESS: "true" = use sgpbusiness.com only, "false" = API only (default)
+        # Note: SGPBusiness is blocked by Cloudflare, so we default to API search
+        self.use_sgpbusiness = os.getenv("USE_SGPBUSINESS", "false").lower()
 
     async def search_company_website(
         self,
@@ -33,27 +34,40 @@ class SearchService:
         Returns:
             Company website URL if found, None otherwise
         """
-        # Strategy 1: Try SGPBusiness.com direct URL (FREE, Singapore-specific)
-        if self.use_sgpbusiness in ["true", "hybrid"]:
+        logger.info(f"Starting website search for: {company_name} (UEN: {uen})")
+        logger.info(f"Search mode: {'SGPBusiness only' if self.use_sgpbusiness == 'true' else 'API search (SerpAPI/Bing)'}")
+
+        # Strategy 1: Try API search first (SerpAPI/Bing) - Primary method
+        if self.use_sgpbusiness != "true":
+            # Try SerpAPI
+            if self.serpapi_key:
+                logger.info("Using SerpAPI to find company website...")
+                website = await self._search_with_serpapi(company_name, uen)
+                if website:
+                    logger.info(f"✓ Found website via SerpAPI: {website}")
+                    return website
+                else:
+                    logger.warning("SerpAPI search returned no results")
+
+            # Fallback to Bing if available
+            if self.bing_key:
+                logger.info("Falling back to Bing Search API...")
+                website = await self._search_with_bing(company_name, uen)
+                if website:
+                    logger.info(f"✓ Found website via Bing: {website}")
+                    return website
+                else:
+                    logger.warning("Bing search returned no results")
+
+        # Strategy 2: SGPBusiness (only if explicitly enabled, but it's blocked by Cloudflare)
+        if self.use_sgpbusiness == "true":
+            logger.warning("SGPBusiness mode enabled, but note: site is blocked by Cloudflare")
             sgp_url = self._construct_sgpbusiness_url(company_name)
             if sgp_url:
                 logger.info(f"Trying SGPBusiness.com: {sgp_url}")
                 return sgp_url
 
-        # Strategy 2: Fallback to API search if hybrid mode or sgpbusiness disabled
-        if self.use_sgpbusiness in ["hybrid", "false"]:
-            # Try SerpAPI
-            if self.serpapi_key:
-                website = await self._search_with_serpapi(company_name, uen)
-                if website:
-                    return website
-
-            # Fallback to Bing if available
-            if self.bing_key:
-                website = await self._search_with_bing(company_name, uen)
-                if website:
-                    return website
-
+        logger.error(f"Failed to find website for {company_name} - no search methods succeeded")
         return None
 
     async def search_with_api_fallback(
