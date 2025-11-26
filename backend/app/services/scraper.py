@@ -40,6 +40,7 @@ class WebScraper:
         """
         try:
             await self.initialize()
+            logger.info(f"Browser initialized, navigating to: {website}")
 
             # Create a new page
             page = await self.browser.new_page()
@@ -48,41 +49,62 @@ class WebScraper:
             page.set_default_timeout(30000)
 
             # Navigate to website
+            logger.info(f"Loading page: {website}")
             await page.goto(website, wait_until='domcontentloaded')
+            logger.info(f"Page loaded successfully: {website}")
 
             # Extract contact information from main page
             main_page_content = await page.content()
+            logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
+
+            # Log a snippet of the content for debugging
+            text_content = await page.inner_text('body')
+            logger.info(f"Page text snippet (first 500 chars): {text_content[:500]}")
+
             contacts = self.extractor.extract_all_contacts(main_page_content)
+            logger.info(f"Extraction results - Phones found: {contacts.get('all_phones', [])}, Emails found: {contacts.get('all_emails', [])}")
 
             # If contact info not found, try to find contact page
             if not (contacts['phone'] or contacts['email']):
+                logger.info("No contact info found on main page, searching for contact page...")
                 contact_page_url = await self._find_contact_page(page, website)
 
                 if contact_page_url:
+                    logger.info(f"Found contact page: {contact_page_url}")
                     await page.goto(contact_page_url, wait_until='domcontentloaded')
                     contact_page_content = await page.content()
                     contacts = self.extractor.extract_all_contacts(contact_page_content)
+                    logger.info(f"Contact page extraction - Phones: {contacts.get('all_phones', [])}, Emails: {contacts.get('all_emails', [])}")
+                else:
+                    logger.info("No contact page found")
 
             # Try About page if still no founder information
             if not contacts['founder']:
+                logger.info("No founder found, searching for about page...")
                 about_page_url = await self._find_about_page(page, website)
 
                 if about_page_url:
+                    logger.info(f"Found about page: {about_page_url}")
                     await page.goto(about_page_url, wait_until='domcontentloaded')
                     about_page_content = await page.content()
                     about_contacts = self.extractor.extract_all_contacts(about_page_content)
 
                     if about_contacts['founder']:
+                        logger.info(f"Found founder on about page: {about_contacts['founder']}")
                         contacts['founder'] = about_contacts['founder']
+                else:
+                    logger.info("No about page found")
 
             await page.close()
 
-            return {
+            final_result = {
                 'phone': contacts['phone'],
                 'email': contacts['email'],
                 'founder': contacts['founder'],
                 'website': website
             }
+            logger.info(f"Final scraping result for {website}: {final_result}")
+            return final_result
 
         except Exception as e:
             logger.error(f"Scraping error for {website}: {str(e)}", exc_info=True)
