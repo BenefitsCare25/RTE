@@ -123,10 +123,30 @@ async def enrich_company_data(
 
             if website:
                 logger.info(f"Website found for {company['name']}: {website}")
+
+                # Check if this is SGPBusiness (might be blocked by Cloudflare)
+                is_sgpbusiness = 'sgpbusiness.com' in website.lower()
+
                 # Scrape contact information
                 contacts = await scraper.scrape_company_contacts(website)
 
                 logger.info(f"Scraping results - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, Founder: {contacts.get('founder', 'N/A')}")
+
+                # If SGPBusiness returned no data (likely blocked), try API fallback
+                if is_sgpbusiness and not any([contacts.get('phone'), contacts.get('email'), contacts.get('founder')]):
+                    logger.warning(f"SGPBusiness blocked for {company['name']}, trying API fallback...")
+                    # Force API search by temporarily disabling sgpbusiness
+                    alt_website = await search_service.search_with_api_fallback(
+                        company['name'],
+                        company['uen'],
+                        company['address']
+                    )
+
+                    if alt_website and alt_website != website:
+                        logger.info(f"Found alternative website via API: {alt_website}")
+                        contacts = await scraper.scrape_company_contacts(alt_website)
+                        website = alt_website
+                        logger.info(f"API fallback results - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}")
 
                 enriched.append({
                     'name': company['name'],
@@ -136,7 +156,7 @@ async def enrich_company_data(
                     'email': contacts.get('email', ''),
                     'founder': contacts.get('founder', ''),
                     'website': website,
-                    'status': 'Success'
+                    'status': 'Success' if any([contacts.get('phone'), contacts.get('email')]) else 'No contact data found'
                 })
             else:
                 # Website not found

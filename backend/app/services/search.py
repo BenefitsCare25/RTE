@@ -56,6 +56,38 @@ class SearchService:
 
         return None
 
+    async def search_with_api_fallback(
+        self,
+        company_name: str,
+        uen: str,
+        address: str
+    ) -> Optional[str]:
+        """
+        Search using only API methods (bypass SGPBusiness)
+        Used as fallback when SGPBusiness is blocked by Cloudflare
+
+        Args:
+            company_name: Name of the company
+            uen: UEN number
+            address: Company address
+
+        Returns:
+            Company website URL if found, None otherwise
+        """
+        # Try SerpAPI
+        if self.serpapi_key:
+            website = await self._search_with_serpapi(company_name, uen)
+            if website:
+                return website
+
+        # Fallback to Bing if available
+        if self.bing_key:
+            website = await self._search_with_bing(company_name, uen)
+            if website:
+                return website
+
+        return None
+
     def _construct_sgpbusiness_url(self, company_name: str) -> Optional[str]:
         """
         Construct direct SGPBusiness.com URL from company name
