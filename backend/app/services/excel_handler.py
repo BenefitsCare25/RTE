@@ -32,7 +32,7 @@ class ExcelHandler:
             if missing_columns:
                 # Try alternative column names
                 column_mapping = {
-                    'name': ['company name', 'company', 'business name'],
+                    'name': ['company name', 'company', 'business name', 'entity_name', 'entity name'],
                     'uen': ['uen number', 'uen no', 'registration number', 'reg no'],
                     'address': ['company address', 'business address', 'location']
                 }
@@ -44,6 +44,47 @@ class ExcelHandler:
                                 df.rename(columns={alt: required}, inplace=True)
                                 missing_columns.remove(required)
                                 break
+
+            # Handle split address columns (block, street_name, postal_code, etc.)
+            if 'address' in missing_columns:
+                address_components = ['block', 'street_name', 'level_no', 'unit_no', 'building_name', 'postal_code']
+                if any(col in df.columns for col in address_components):
+                    # Build address from components
+                    def build_address(row):
+                        parts = []
+
+                        # Block number
+                        if 'block' in df.columns and pd.notna(row.get('block')):
+                            parts.append(f"BLK {row['block']}")
+
+                        # Street name
+                        if 'street_name' in df.columns and pd.notna(row.get('street_name')):
+                            parts.append(str(row['street_name']))
+
+                        # Unit number (level + unit)
+                        unit_parts = []
+                        if 'level_no' in df.columns and pd.notna(row.get('level_no')) and str(row.get('level_no')).lower() != 'na':
+                            unit_parts.append(f"#{row['level_no']}")
+                        if 'unit_no' in df.columns and pd.notna(row.get('unit_no')) and str(row.get('unit_no')).lower() != 'na':
+                            if unit_parts:
+                                unit_parts.append(f"-{row['unit_no']}")
+                            else:
+                                unit_parts.append(f"#{row['unit_no']}")
+                        if unit_parts:
+                            parts.append(''.join(unit_parts))
+
+                        # Building name
+                        if 'building_name' in df.columns and pd.notna(row.get('building_name')) and str(row.get('building_name')).lower() != 'na':
+                            parts.append(str(row['building_name']))
+
+                        # Postal code
+                        if 'postal_code' in df.columns and pd.notna(row.get('postal_code')):
+                            parts.append(f"Singapore {row['postal_code']}")
+
+                        return ', '.join(parts) if parts else ''
+
+                    df['address'] = df.apply(build_address, axis=1)
+                    missing_columns.remove('address')
 
             if missing_columns:
                 raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
