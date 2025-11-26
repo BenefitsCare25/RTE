@@ -3,7 +3,8 @@ services:
     name: company-enrichment-api
     env: python
     region: oregon
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
