@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import Upload from './components/Upload';
 import Processing from './components/Processing';
 import { enrichCompanies } from './api/client';

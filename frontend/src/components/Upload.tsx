@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 
 interface UploadProps {
@@ -6,7 +6,7 @@ interface UploadProps {
   isProcessing: boolean;
 }
 
-const Upload: React.FC<UploadProps> = ({ onUpload, isProcessing }) => {
+const Upload = ({ onUpload, isProcessing }: UploadProps) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
