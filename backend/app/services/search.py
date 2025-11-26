@@ -1,8 +1,11 @@
 import os
 import httpx
 import re
+import logging
 from typing import Optional, Dict, Any
 import asyncio
+
+logger = logging.getLogger(__name__)
 
 class SearchService:
     """Service for searching company information using search engines"""
@@ -34,7 +37,7 @@ class SearchService:
         if self.use_sgpbusiness in ["true", "hybrid"]:
             sgp_url = self._construct_sgpbusiness_url(company_name)
             if sgp_url:
-                print(f"Trying SGPBusiness.com: {sgp_url}")
+                logger.info(f"Trying SGPBusiness.com: {sgp_url}")
                 return sgp_url
 
         # Strategy 2: Fallback to API search if hybrid mode or sgpbusiness disabled
@@ -134,7 +137,7 @@ class SearchService:
                     return self._extract_website_from_results(data, company_name)
 
         except Exception as e:
-            print(f"SerpAPI search error: {str(e)}")
+            logger.error(f"SerpAPI search error: {str(e)}")
 
         return None
 
@@ -178,7 +181,7 @@ class SearchService:
                     return self._extract_website_from_bing(data, company_name)
 
         except Exception as e:
-            print(f"Bing search error: {str(e)}")
+            logger.error(f"Bing search error: {str(e)}")
 
         return None
 
@@ -200,10 +203,10 @@ class SearchService:
         # Check organic results
         organic_results = data.get("organic_results", [])
 
-        print(f"\n{'='*80}")
-        print(f"SerpAPI Search Results for: {company_name}")
-        print(f"Total results returned: {len(organic_results)}")
-        print(f"{'='*80}")
+        logger.info(f"{'='*80}")
+        logger.info(f"SerpAPI Search Results for: {company_name}")
+        logger.info(f"Total results returned: {len(organic_results)}")
+        logger.info(f"{'='*80}")
 
         # Skip common non-company sites
         excluded_domains = [
@@ -216,15 +219,15 @@ class SearchService:
         for idx, result in enumerate(organic_results, 1):
             url = result.get("link", "")
             title = result.get("title", "")
-            print(f"\nResult #{idx}:")
-            print(f"  Title: {title}")
-            print(f"  URL:   {url}")
+            logger.info(f"Result #{idx}:")
+            logger.info(f"  Title: {title}")
+            logger.info(f"  URL:   {url}")
 
             # Check if excluded
             is_excluded = any(domain in url for domain in excluded_domains)
             if is_excluded:
                 excluded_domain = next(domain for domain in excluded_domains if domain in url)
-                print(f"  Status: ❌ EXCLUDED (domain: {excluded_domain})")
+                logger.info(f"  Status: EXCLUDED (domain: {excluded_domain})")
             else:
                 # Check if matches company name
                 title_match = company_name.lower() in title.lower()
@@ -235,13 +238,13 @@ class SearchService:
                         match_type.append("title")
                     if url_match:
                         match_type.append("URL")
-                    print(f"  Status: ✓ MATCHES company name in {', '.join(match_type)}")
+                    logger.info(f"  Status: MATCHES company name in {', '.join(match_type)}")
                 else:
-                    print(f"  Status: ○ Valid but no company name match")
+                    logger.info(f"  Status: Valid but no company name match")
 
-        print(f"\n{'-'*80}")
-        print("Selection Logic:")
-        print(f"{'-'*80}")
+        logger.info(f"{'-'*80}")
+        logger.info("Selection Logic:")
+        logger.info(f"{'-'*80}")
 
         # First pass: Find result with company name match
         for idx, result in enumerate(organic_results, 1):
@@ -254,25 +257,25 @@ class SearchService:
             # Prefer results with company name in URL or title
             if company_name.lower() in title or company_name.lower() in url.lower():
                 selected_url = self._clean_url(url)
-                print(f"✅ SELECTED Result #{idx} (Priority: Company name match)")
-                print(f"   URL: {selected_url}")
-                print(f"{'='*80}\n")
+                logger.info(f"SELECTED Result #{idx} (Priority: Company name match)")
+                logger.info(f"   URL: {selected_url}")
+                logger.info(f"{'='*80}")
                 return selected_url
 
         # Second pass: Return first non-excluded result
-        print("No company name match found. Selecting first valid non-excluded result...")
+        logger.info("No company name match found. Selecting first valid non-excluded result...")
         if organic_results:
             for idx, result in enumerate(organic_results, 1):
                 url = result.get("link", "")
                 if not any(domain in url for domain in excluded_domains):
                     selected_url = self._clean_url(url)
-                    print(f"✅ SELECTED Result #{idx} (Priority: First valid result)")
-                    print(f"   URL: {selected_url}")
-                    print(f"{'='*80}\n")
+                    logger.info(f"SELECTED Result #{idx} (Priority: First valid result)")
+                    logger.info(f"   URL: {selected_url}")
+                    logger.info(f"{'='*80}")
                     return selected_url
 
-        print("❌ No valid results found (all excluded)")
-        print(f"{'='*80}\n")
+        logger.warning("No valid results found (all excluded)")
+        logger.info(f"{'='*80}")
         return None
 
     def _extract_website_from_bing(

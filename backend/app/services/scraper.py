@@ -1,7 +1,10 @@
 from playwright.async_api import async_playwright, Browser, Page
 from typing import Optional, Dict, List
 import asyncio
+import logging
 from app.utils.extractors import ContactExtractor
+
+logger = logging.getLogger(__name__)
 
 class WebScraper:
     """Service for scraping company websites to extract contact information"""
@@ -82,7 +85,7 @@ class WebScraper:
             }
 
         except Exception as e:
-            print(f"Scraping error for {website}: {str(e)}")
+            logger.error(f"Scraping error for {website}: {str(e)}", exc_info=True)
             return {
                 'phone': None,
                 'email': None,
@@ -131,7 +134,7 @@ class WebScraper:
                     continue
 
         except Exception as e:
-            print(f"Error finding contact page: {str(e)}")
+            logger.error(f"Error finding contact page: {str(e)}")
 
         return None
 
@@ -177,7 +180,7 @@ class WebScraper:
                     continue
 
         except Exception as e:
-            print(f"Error finding about page: {str(e)}")
+            logger.error(f"Error finding about page: {str(e)}")
 
         return None
 
