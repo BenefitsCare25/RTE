@@ -99,6 +99,7 @@ async def enrich_company_data(
 ) -> List[Dict]:
     """
     Enrich company data with contact information
+    Scrapes multiple websites per company to maximize data extraction success
 
     Args:
         companies: List of company dictionaries
@@ -114,38 +115,65 @@ async def enrich_company_data(
         try:
             logger.info(f"Processing company {idx}/{len(companies)}: {company['name']}")
 
-            # Search for company website
-            website = await search_service.search_company_website(
+            # Search for company websites (returns list of up to 5 URLs)
+            websites = await search_service.search_company_websites(
                 company['name'],
                 company['uen'],
                 company['address']
             )
 
-            if website:
-                logger.info(f"Website found for {company['name']}: {website}")
+            if websites:
+                logger.info(f"Found {len(websites)} websites for {company['name']}, attempting to scrape all...")
 
-                # Scrape contact information from the found website
-                contacts = await scraper.scrape_company_contacts(website)
+                # Scrape all websites and aggregate results
+                all_contacts = []
+                successful_websites = []
 
-                logger.info(f"Scraping results - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, Founder: {contacts.get('founder', 'N/A')}")
+                for website_idx, website in enumerate(websites, 1):
+                    logger.info(f"Scraping website {website_idx}/{len(websites)}: {website}")
 
-                # Determine status based on whether we found contact info
-                has_contact_info = any([contacts.get('phone'), contacts.get('email')])
-                status = 'Success' if has_contact_info else 'Website found but no contact data'
+                    contacts = await scraper.scrape_company_contacts(website)
+
+                    # Check if we got any useful data from this website
+                    has_data = any([contacts.get('phone'), contacts.get('email'), contacts.get('founder')])
+
+                    if has_data:
+                        logger.info(f"✓ Website {website_idx} provided data - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, Founder: {contacts.get('founder', 'N/A')}")
+                        all_contacts.append(contacts)
+                        successful_websites.append(website)
+                    else:
+                        logger.warning(f"✗ Website {website_idx} returned no data")
+
+                    # Small delay between scraping attempts
+                    await asyncio.sleep(0.5)
+
+                # Aggregate results from all successful sources
+                aggregated = _aggregate_contacts(all_contacts)
+
+                logger.info(f"Aggregation complete - Final results: Phone: {aggregated.get('phone', 'N/A')}, Email: {aggregated.get('email', 'N/A')}, Founder: {aggregated.get('founder', 'N/A')}")
+
+                # Determine status and primary website
+                has_contact_info = any([aggregated.get('phone'), aggregated.get('email')])
+                primary_website = successful_websites[0] if successful_websites else websites[0]
+
+                if has_contact_info:
+                    status = f'Success (from {len(successful_websites)}/{len(websites)} websites)'
+                else:
+                    status = f'Scraped {len(websites)} websites but no contact data found'
 
                 enriched.append({
                     'name': company['name'],
                     'uen': company['uen'],
                     'address': company['address'],
-                    'phone': contacts.get('phone', ''),
-                    'email': contacts.get('email', ''),
-                    'founder': contacts.get('founder', ''),
-                    'website': website,
+                    'phone': aggregated.get('phone', ''),
+                    'email': aggregated.get('email', ''),
+                    'founder': aggregated.get('founder', ''),
+                    'website': primary_website,
                     'status': status
                 })
             else:
-                # Website not found
-                logger.warning(f"Website not found for {company['name']}")
+                # No websites found
+                logger.warning(f"No websites found for {company['name']}")
                 enriched.append({
                     'name': company['name'],
                     'uen': company['uen'],
@@ -154,7 +182,7 @@ async def enrich_company_data(
                     'email': '',
                     'founder': '',
                     'website': '',
-                    'status': 'Website not found'
+                    'status': 'No websites found'
                 })
 
         except Exception as e:
@@ -176,6 +204,37 @@ async def enrich_company_data(
 
     logger.info(f"Enrichment complete. Processed {len(enriched)} companies")
     return enriched
+
+
+def _aggregate_contacts(all_contacts: List[Dict]) -> Dict:
+    """
+    Aggregate contact information from multiple sources
+    Takes the first valid value found for each field
+
+    Args:
+        all_contacts: List of contact dictionaries from different websites
+
+    Returns:
+        Aggregated contact dictionary with best available data
+    """
+    aggregated = {
+        'phone': None,
+        'email': None,
+        'founder': None
+    }
+
+    # Collect first valid value for each field
+    for contacts in all_contacts:
+        if not aggregated['phone'] and contacts.get('phone'):
+            aggregated['phone'] = contacts['phone']
+
+        if not aggregated['email'] and contacts.get('email'):
+            aggregated['email'] = contacts['email']
+
+        if not aggregated['founder'] and contacts.get('founder'):
+            aggregated['founder'] = contacts['founder']
+
+    return aggregated
 
 @router.get("/status")
 async def get_status():

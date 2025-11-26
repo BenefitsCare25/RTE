@@ -14,14 +14,15 @@ class SearchService:
         self.serpapi_key = os.getenv("SERPAPI_KEY")
         self.bing_key = os.getenv("BING_SEARCH_KEY")
 
-    async def search_company_website(
+    async def search_company_websites(
         self,
         company_name: str,
         uen: str,
         address: str
-    ) -> Optional[str]:
+    ) -> List[str]:
         """
-        Search for company website using API search (SerpAPI or Bing)
+        Search for company websites using API search (SerpAPI or Bing)
+        Returns multiple websites to maximize data extraction success
 
         Args:
             company_name: Name of the company
@@ -29,38 +30,38 @@ class SearchService:
             address: Company address
 
         Returns:
-            Company website URL if found, None otherwise
+            List of company website URLs (up to 5), empty list if none found
         """
         logger.info(f"Starting website search for: {company_name} (UEN: {uen})")
 
         # Try SerpAPI first
         if self.serpapi_key:
-            logger.info("Using SerpAPI to find company website...")
-            website = await self._search_with_serpapi(company_name, uen)
-            if website:
-                logger.info(f"✓ Found website via SerpAPI: {website}")
-                return website
+            logger.info("Using SerpAPI to find company websites...")
+            websites = await self._search_with_serpapi(company_name, uen)
+            if websites:
+                logger.info(f"✓ Found {len(websites)} websites via SerpAPI: {websites}")
+                return websites
             else:
                 logger.warning("SerpAPI search returned no results")
 
         # Fallback to Bing if SerpAPI fails or unavailable
         if self.bing_key:
             logger.info("Falling back to Bing Search API...")
-            website = await self._search_with_bing(company_name, uen)
-            if website:
-                logger.info(f"✓ Found website via Bing: {website}")
-                return website
+            websites = await self._search_with_bing(company_name, uen)
+            if websites:
+                logger.info(f"✓ Found {len(websites)} websites via Bing: {websites}")
+                return websites
             else:
                 logger.warning("Bing search returned no results")
 
-        logger.error(f"Failed to find website for {company_name} - no search API keys configured or no results found")
-        return None
+        logger.error(f"Failed to find websites for {company_name} - no search API keys configured or no results found")
+        return []
 
     async def _search_with_serpapi(
         self,
         company_name: str,
         uen: str
-    ) -> Optional[str]:
+    ) -> List[str]:
         """
         Search using SerpAPI (Google Custom Search)
 
@@ -69,7 +70,7 @@ class SearchService:
             uen: UEN number
 
         Returns:
-            Website URL if found
+            List of website URLs (up to 5)
         """
         try:
             query = f"{company_name} Singapore UEN {uen}"
@@ -91,18 +92,18 @@ class SearchService:
 
                 if response.status_code == 200:
                     data = response.json()
-                    return self._extract_website_from_results(data, company_name)
+                    return self._extract_websites_from_results(data, company_name)
 
         except Exception as e:
             logger.error(f"SerpAPI search error: {str(e)}")
 
-        return None
+        return []
 
     async def _search_with_bing(
         self,
         company_name: str,
         uen: str
-    ) -> Optional[str]:
+    ) -> List[str]:
         """
         Search using Bing Search API
 
@@ -111,7 +112,7 @@ class SearchService:
             uen: UEN number
 
         Returns:
-            Website URL if found
+            List of website URLs (up to 5)
         """
         try:
             query = f"{company_name} Singapore UEN {uen}"
@@ -135,27 +136,28 @@ class SearchService:
 
                 if response.status_code == 200:
                     data = response.json()
-                    return self._extract_website_from_bing(data, company_name)
+                    return self._extract_websites_from_bing(data, company_name)
 
         except Exception as e:
             logger.error(f"Bing search error: {str(e)}")
 
-        return None
+        return []
 
-    def _extract_website_from_results(
+    def _extract_websites_from_results(
         self,
         data: Dict[str, Any],
         company_name: str
-    ) -> Optional[str]:
+    ) -> List[str]:
         """
-        Extract website URL from SerpAPI results
+        Extract website URLs from SerpAPI results
+        Returns multiple websites to maximize data extraction success
 
         Args:
             data: SerpAPI response data
             company_name: Company name for validation
 
         Returns:
-            Website URL if found
+            List of website URLs (prioritized: company name matches first, then other valid results)
         """
         # Check organic results
         organic_results = data.get("organic_results", [])
@@ -202,10 +204,12 @@ class SearchService:
                     logger.info(f"  Status: Valid but no company name match")
 
         logger.info(f"{'-'*80}")
-        logger.info("Selection Logic:")
+        logger.info("Selection Strategy: Collecting ALL valid websites for multi-source extraction")
         logger.info(f"{'-'*80}")
 
-        # First pass: Find result with company name match
+        selected_websites = []
+
+        # First pass: Collect results with company name match (priority)
         for idx, result in enumerate(organic_results, 1):
             url = result.get("link", "")
             title = result.get("title", "").lower()
@@ -213,44 +217,44 @@ class SearchService:
             if any(domain in url for domain in excluded_domains):
                 continue
 
-            # Prefer results with company name in URL or title
             if company_name.lower() in title or company_name.lower() in url.lower():
-                selected_url = self._clean_url(url)
-                logger.info(f"SELECTED Result #{idx} (Priority: Company name match)")
-                logger.info(f"   URL: {selected_url}")
-                logger.info(f"{'='*80}")
-                return selected_url
+                cleaned_url = self._clean_url(url)
+                selected_websites.append(cleaned_url)
+                logger.info(f"ADDED Result #{idx} (Priority: Company name match) - {cleaned_url}")
 
-        # Second pass: Return first non-excluded result
-        logger.info("No company name match found. Selecting first valid non-excluded result...")
-        if organic_results:
-            for idx, result in enumerate(organic_results, 1):
-                url = result.get("link", "")
-                if not any(domain in url for domain in excluded_domains):
-                    selected_url = self._clean_url(url)
-                    logger.info(f"SELECTED Result #{idx} (Priority: First valid result)")
-                    logger.info(f"   URL: {selected_url}")
-                    logger.info(f"{'='*80}")
-                    return selected_url
+        # Second pass: Add remaining non-excluded results
+        for idx, result in enumerate(organic_results, 1):
+            url = result.get("link", "")
+            cleaned_url = self._clean_url(url)
 
-        logger.warning("No valid results found (all excluded)")
+            if any(domain in url for domain in excluded_domains):
+                continue
+
+            if cleaned_url not in selected_websites:
+                selected_websites.append(cleaned_url)
+                logger.info(f"ADDED Result #{idx} (Valid alternative) - {cleaned_url}")
+
+        logger.info(f"{'-'*80}")
+        logger.info(f"TOTAL SELECTED: {len(selected_websites)} websites will be scraped")
         logger.info(f"{'='*80}")
-        return None
 
-    def _extract_website_from_bing(
+        return selected_websites
+
+    def _extract_websites_from_bing(
         self,
         data: Dict[str, Any],
         company_name: str
-    ) -> Optional[str]:
+    ) -> List[str]:
         """
-        Extract website URL from Bing search results
+        Extract website URLs from Bing search results
+        Returns multiple websites to maximize data extraction success
 
         Args:
             data: Bing API response data
             company_name: Company name for validation
 
         Returns:
-            Website URL if found
+            List of website URLs (prioritized: company name matches first, then other valid results)
         """
         web_pages = data.get("webPages", {}).get("value", [])
 
@@ -263,6 +267,10 @@ class SearchService:
             'ltddir.com', 'sgpgrid.com', 'tellme.sg'
         ]
 
+        logger.info("Collecting websites from Bing results...")
+        selected_websites = []
+
+        # First pass: Collect results with company name match (priority)
         for page in web_pages:
             url = page.get("url", "")
 
@@ -271,16 +279,24 @@ class SearchService:
 
             name = page.get("name", "").lower()
             if company_name.lower() in name or company_name.lower() in url.lower():
-                return self._clean_url(url)
+                cleaned_url = self._clean_url(url)
+                selected_websites.append(cleaned_url)
+                logger.info(f"ADDED (Priority: Company name match) - {cleaned_url}")
 
-        # Return first non-excluded result
-        if web_pages:
-            for page in web_pages:
-                url = page.get("url", "")
-                if not any(domain in url for domain in excluded_domains):
-                    return self._clean_url(url)
+        # Second pass: Add remaining non-excluded results
+        for page in web_pages:
+            url = page.get("url", "")
+            cleaned_url = self._clean_url(url)
 
-        return None
+            if any(domain in url for domain in excluded_domains):
+                continue
+
+            if cleaned_url not in selected_websites:
+                selected_websites.append(cleaned_url)
+                logger.info(f"ADDED (Valid alternative) - {cleaned_url}")
+
+        logger.info(f"TOTAL SELECTED: {len(selected_websites)} websites from Bing")
+        return selected_websites
 
     @staticmethod
     def _clean_url(url: str) -> str:
