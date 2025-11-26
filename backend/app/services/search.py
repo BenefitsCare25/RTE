@@ -200,31 +200,79 @@ class SearchService:
         # Check organic results
         organic_results = data.get("organic_results", [])
 
-        for result in organic_results:
-            url = result.get("link", "")
+        print(f"\n{'='*80}")
+        print(f"SerpAPI Search Results for: {company_name}")
+        print(f"Total results returned: {len(organic_results)}")
+        print(f"{'='*80}")
 
-            # Skip common non-company sites
-            excluded_domains = [
-                'facebook.com', 'linkedin.com', 'instagram.com',
-                'twitter.com', 'youtube.com', 'wikipedia.org',
-                'bizfile.gov.sg', 'dnb.com', 'bloomberg.com'
-            ]
+        # Skip common non-company sites
+        excluded_domains = [
+            'facebook.com', 'linkedin.com', 'instagram.com',
+            'twitter.com', 'youtube.com', 'wikipedia.org',
+            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com'
+        ]
+
+        # Display all results first
+        for idx, result in enumerate(organic_results, 1):
+            url = result.get("link", "")
+            title = result.get("title", "")
+            print(f"\nResult #{idx}:")
+            print(f"  Title: {title}")
+            print(f"  URL:   {url}")
+
+            # Check if excluded
+            is_excluded = any(domain in url for domain in excluded_domains)
+            if is_excluded:
+                excluded_domain = next(domain for domain in excluded_domains if domain in url)
+                print(f"  Status: ❌ EXCLUDED (domain: {excluded_domain})")
+            else:
+                # Check if matches company name
+                title_match = company_name.lower() in title.lower()
+                url_match = company_name.lower() in url.lower()
+                if title_match or url_match:
+                    match_type = []
+                    if title_match:
+                        match_type.append("title")
+                    if url_match:
+                        match_type.append("URL")
+                    print(f"  Status: ✓ MATCHES company name in {', '.join(match_type)}")
+                else:
+                    print(f"  Status: ○ Valid but no company name match")
+
+        print(f"\n{'-'*80}")
+        print("Selection Logic:")
+        print(f"{'-'*80}")
+
+        # First pass: Find result with company name match
+        for idx, result in enumerate(organic_results, 1):
+            url = result.get("link", "")
+            title = result.get("title", "").lower()
 
             if any(domain in url for domain in excluded_domains):
                 continue
 
             # Prefer results with company name in URL or title
-            title = result.get("title", "").lower()
             if company_name.lower() in title or company_name.lower() in url.lower():
-                return self._clean_url(url)
+                selected_url = self._clean_url(url)
+                print(f"✅ SELECTED Result #{idx} (Priority: Company name match)")
+                print(f"   URL: {selected_url}")
+                print(f"{'='*80}\n")
+                return selected_url
 
-        # If no match with company name, return first non-excluded result
+        # Second pass: Return first non-excluded result
+        print("No company name match found. Selecting first valid non-excluded result...")
         if organic_results:
-            for result in organic_results:
+            for idx, result in enumerate(organic_results, 1):
                 url = result.get("link", "")
                 if not any(domain in url for domain in excluded_domains):
-                    return self._clean_url(url)
+                    selected_url = self._clean_url(url)
+                    print(f"✅ SELECTED Result #{idx} (Priority: First valid result)")
+                    print(f"   URL: {selected_url}")
+                    print(f"{'='*80}\n")
+                    return selected_url
 
+        print("❌ No valid results found (all excluded)")
+        print(f"{'='*80}\n")
         return None
 
     def _extract_website_from_bing(
