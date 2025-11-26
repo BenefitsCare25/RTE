@@ -9,6 +9,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
+      - key: USE_SGPBUSINESS
+        value: hybrid
       - key: SERPAPI_KEY
         sync: false
       - key: BING_SEARCH_KEY

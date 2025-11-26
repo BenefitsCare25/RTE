@@ -1,5 +1,6 @@
 import os
 import httpx
+import re
 from typing import Optional, Dict, Any
 import asyncio
 
@@ -9,6 +10,8 @@ class SearchService:
     def __init__(self):
         self.serpapi_key = os.getenv("SERPAPI_KEY")
         self.bing_key = os.getenv("BING_SEARCH_KEY")
+        # USE_SGPBUSINESS: "true" = use sgpbusiness.com only, "hybrid" = try sgpbusiness first then API, "false" = API only
+        self.use_sgpbusiness = os.getenv("USE_SGPBUSINESS", "hybrid").lower()
 
     async def search_company_website(
         self,
@@ -17,7 +20,7 @@ class SearchService:
         address: str
     ) -> Optional[str]:
         """
-        Search for company website using available search APIs
+        Search for company website using available search methods
 
         Args:
             company_name: Name of the company
@@ -27,19 +30,71 @@ class SearchService:
         Returns:
             Company website URL if found, None otherwise
         """
-        # Try SerpAPI first
-        if self.serpapi_key:
-            website = await self._search_with_serpapi(company_name, uen)
-            if website:
-                return website
+        # Strategy 1: Try SGPBusiness.com direct URL (FREE, Singapore-specific)
+        if self.use_sgpbusiness in ["true", "hybrid"]:
+            sgp_url = self._construct_sgpbusiness_url(company_name)
+            if sgp_url:
+                print(f"Trying SGPBusiness.com: {sgp_url}")
+                return sgp_url
 
-        # Fallback to Bing if available
-        if self.bing_key:
-            website = await self._search_with_bing(company_name, uen)
-            if website:
-                return website
+        # Strategy 2: Fallback to API search if hybrid mode or sgpbusiness disabled
+        if self.use_sgpbusiness in ["hybrid", "false"]:
+            # Try SerpAPI
+            if self.serpapi_key:
+                website = await self._search_with_serpapi(company_name, uen)
+                if website:
+                    return website
+
+            # Fallback to Bing if available
+            if self.bing_key:
+                website = await self._search_with_bing(company_name, uen)
+                if website:
+                    return website
 
         return None
+
+    def _construct_sgpbusiness_url(self, company_name: str) -> Optional[str]:
+        """
+        Construct direct SGPBusiness.com URL from company name
+
+        Examples:
+            "AMERICAN LLOYD TRAVEL SERVICES PTE LTD" ->
+            "https://www.sgpbusiness.com/company/American-Lloyd-Travel-Services-Pte-Ltd"
+
+            "ARCHIPELAGO BREWERY CO. (1941) PTE. LIMITED" ->
+            "https://www.sgpbusiness.com/company/Archipelago-Brewery-Co-1941-Pte-Limited"
+
+        Args:
+            company_name: Company name to format
+
+        Returns:
+            SGPBusiness.com URL
+        """
+        if not company_name:
+            return None
+
+        # Clean and format the company name
+        formatted_name = company_name.strip()
+
+        # Replace multiple spaces with single space
+        formatted_name = re.sub(r'\s+', ' ', formatted_name)
+
+        # Title case each word
+        formatted_name = formatted_name.title()
+
+        # Replace spaces with hyphens
+        formatted_name = formatted_name.replace(' ', '-')
+
+        # Handle special characters:
+        # Keep: periods, parentheses, numbers
+        # Remove: commas, apostrophes, ampersands
+        formatted_name = formatted_name.replace(',', '')
+        formatted_name = formatted_name.replace("'", '')
+        formatted_name = formatted_name.replace('&', 'And')
+
+        # Construct URL
+        base_url = "https://www.sgpbusiness.com/company/"
+        return base_url + formatted_name
 
     async def _search_with_serpapi(
         self,
