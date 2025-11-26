@@ -1,16 +1,11 @@
 services:
   - type: web
     name: company-enrichment-api
-    env: python
+    env: docker
     region: oregon
     rootDir: backend
-    buildCommand: |
-      pip install -r requirements.txt &&
-      playwright install --with-deps chromium
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.8
       - key: USE_SGPBUSINESS
         value: hybrid
       - key: SERPAPI_KEY
