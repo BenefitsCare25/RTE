@@ -315,13 +315,13 @@ class WebScraper:
         try:
             logger.info(f"Attempting FlareSolverr fallback for: {website}")
 
-            async with httpx.AsyncClient(timeout=180.0) as client:  # 3 min for HTTP client
+            async with httpx.AsyncClient(timeout=None) as client:  # No timeout
                 response = await client.post(
                     self.flaresolverr_url,
                     json={
                         "cmd": "request.get",
                         "url": website,
-                        "maxTimeout": 120000  # 2 min for FlareSolverr challenge
+                        "maxTimeout": 300000  # 5 min for FlareSolverr challenge
                     }
                 )
 
