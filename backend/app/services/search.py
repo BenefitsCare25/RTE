@@ -36,6 +36,8 @@ EXCLUDED_DOMAINS = [
     'twitter.com', 'youtube.com', 'wikipedia.org',
     'bizfile.gov.sg',  # Official registry, no contact info
     'tiktok.com', 'pinterest.com',
+    'sgpbusiness.com',  # Directory site, no direct contact info
+    'opengovsg.com',  # Government data aggregator, no contact info
 ]
 
 

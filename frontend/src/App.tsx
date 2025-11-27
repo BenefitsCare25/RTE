@@ -1,48 +1,169 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Upload from './components/Upload';
 import Processing from './components/Processing';
-import { enrichCompanies } from './api/client';
+import RecoveryPrompt from './components/RecoveryPrompt';
+import { enrichCompaniesWithProgress } from './api/streamClient';
+import { recoveryStorage, type RecoverySession } from './services/recoveryStorage';
+import { generateExcelBlob, downloadBlob } from './utils/excelGenerator';
+
+interface ProgressState {
+  current: number;
+  total: number;
+  company: string;
+}
 
 function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recoverySession, setRecoverySession] = useState<RecoverySession | null>(null);
+  const [progress, setProgress] = useState<ProgressState>({ current: 0, total: 0, company: '' });
+
+  // Track current session ID for disruption handling
+  const currentSessionRef = useRef<string | null>(null);
+  const originalFilenameRef = useRef<string>('');
+
+  // Check for incomplete session on mount
+  useEffect(() => {
+    const checkRecovery = async () => {
+      try {
+        await recoveryStorage.init();
+        const session = await recoveryStorage.getIncompleteSession();
+        if (session && session.processedCompanies.length > 0) {
+          setRecoverySession(session);
+        }
+      } catch (err) {
+        console.error('Failed to check for recovery session:', err);
+      }
+    };
+    checkRecovery();
+  }, []);
+
+  // Handle page visibility and beforeunload for disruption detection
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isProcessing && currentSessionRef.current) {
+        // Mark session as interrupted before page unloads
+        recoveryStorage.markInterrupted(currentSessionRef.current);
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      // On mobile, tab hidden often means app will be killed
+      if (document.visibilityState === 'hidden' && isProcessing && currentSessionRef.current) {
+        recoveryStorage.markInterrupted(currentSessionRef.current);
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isProcessing]);
 
   const handleFileUpload = async (file: File) => {
     setIsProcessing(true);
     setError(null);
+    setProgress({ current: 0, total: 0, company: '' });
+    originalFilenameRef.current = file.name;
 
-    try {
-      const enrichedFile = await enrichCompanies(file);
+    await enrichCompaniesWithProgress(
+      file,
+      // Progress callback
+      async (event) => {
+        try {
+          if (event.type === 'session_start') {
+            currentSessionRef.current = event.session_id;
 
-      // Download the enriched file
-      const url = window.URL.createObjectURL(enrichedFile);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `enriched_${file.name}`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+            // Create new recovery session
+            await recoveryStorage.saveSession({
+              sessionId: event.session_id,
+              originalFilename: event.original_filename,
+              totalCompanies: event.total_companies,
+              processedCompanies: [],
+              startedAt: Date.now(),
+              lastUpdatedAt: Date.now(),
+              status: 'in_progress',
+            });
 
-    } catch (err: any) {
-      console.error('Enrichment error:', err);
+            setProgress({ current: 0, total: event.total_companies, company: '' });
+          } else if (event.type === 'company_processed') {
+            // Store processed company to IndexedDB
+            await recoveryStorage.addProcessedCompany(currentSessionRef.current!, event.data);
 
-      if (err.response?.data) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          try {
-            const error = JSON.parse(reader.result as string);
-            setError(error.detail || 'An error occurred during processing');
-          } catch {
-            setError('An error occurred during processing');
+            setProgress({
+              current: event.index + 1,
+              total: event.total,
+              company: event.data.name,
+            });
+          } else if (event.type === 'complete') {
+            // Get all processed data and generate Excel
+            const session = await recoveryStorage.getSession(currentSessionRef.current!);
+            if (session && session.processedCompanies.length > 0) {
+              const blob = generateExcelBlob(
+                session.processedCompanies,
+                session.originalFilename
+              );
+              downloadBlob(blob, `enriched_${session.originalFilename}`);
+
+              // Clear the session after successful download
+              await recoveryStorage.clearSession(session.sessionId);
+            }
+
+            currentSessionRef.current = null;
+            setIsProcessing(false);
           }
-        };
-        reader.readAsText(err.response.data);
-      } else {
-        setError(err.message || 'Failed to connect to the server');
+        } catch (err) {
+          console.error('Error handling progress event:', err);
+        }
+      },
+      // Error callback
+      async (err) => {
+        console.error('Enrichment stream error:', err);
+
+        // Mark session as interrupted
+        if (currentSessionRef.current) {
+          await recoveryStorage.markInterrupted(currentSessionRef.current);
+
+          // Check if there's recoverable data
+          const session = await recoveryStorage.getIncompleteSession();
+          if (session && session.processedCompanies.length > 0) {
+            setRecoverySession(session);
+          }
+        }
+
+        setError(`Connection error: ${err.message}. Your progress has been saved.`);
+        setIsProcessing(false);
+        currentSessionRef.current = null;
       }
-    } finally {
-      setIsProcessing(false);
+    );
+  };
+
+  const handleRecover = async () => {
+    if (recoverySession) {
+      // Generate Excel from stored data
+      const blob = generateExcelBlob(
+        recoverySession.processedCompanies,
+        recoverySession.originalFilename
+      );
+      downloadBlob(blob, `partial_${recoverySession.originalFilename}`);
+
+      // Clear the session
+      await recoveryStorage.clearSession(recoverySession.sessionId);
+      setRecoverySession(null);
+      setError(null);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (recoverySession) {
+      await recoveryStorage.clearSession(recoverySession.sessionId);
+      setRecoverySession(null);
+      setError(null);
     }
   };
 
@@ -54,8 +175,8 @@ function App() {
             Company Data Enrichment Platform
           </h1>
           <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-            Upload your Excel file with company details (name, UEN, address)
-            and get enriched data with contact information, emails, and founder details.
+            Upload your Excel file with company details (name, UEN, address) and get enriched data
+            with contact information, emails, and founder details.
           </p>
         </div>
 
@@ -63,11 +184,7 @@ function App() {
           <div className="max-w-2xl mx-auto mb-6">
             <div className="bg-red-50 border border-red-200 rounded-lg p-4">
               <div className="flex">
-                <svg
-                  className="h-5 w-5 text-red-400"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
+                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
                   <path
                     fillRule="evenodd"
                     d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
@@ -95,14 +212,26 @@ function App() {
           </div>
         )}
 
-        <Upload onUpload={handleFileUpload} isProcessing={isProcessing} />
+        {recoverySession ? (
+          <RecoveryPrompt
+            session={recoverySession}
+            onRecover={handleRecover}
+            onDiscard={handleDiscard}
+          />
+        ) : (
+          <Upload onUpload={handleFileUpload} isProcessing={isProcessing} />
+        )}
 
-        {isProcessing && <Processing />}
+        {isProcessing && (
+          <Processing
+            currentIndex={progress.current}
+            totalCompanies={progress.total}
+            currentCompany={progress.company}
+          />
+        )}
 
         <div className="mt-16 max-w-3xl mx-auto">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-6 text-center">
-            How It Works
-          </h2>
+          <h2 className="text-2xl font-semibold text-gray-900 mb-6 text-center">How It Works</h2>
           <div className="grid md:grid-cols-3 gap-6">
             <div className="bg-white rounded-lg p-6 shadow-sm">
               <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mb-4">

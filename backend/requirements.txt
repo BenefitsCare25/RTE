@@ -18,6 +18,9 @@ httpx==0.26.0
 # Environment variables
 python-dotenv==1.0.0
 
+# Server-Sent Events for streaming
+sse-starlette==2.0.0
+
 # Optional environment variables for enhanced scraping:
 # - PROXY_SERVER: e.g., "http://proxy.example.com:8080"
 # - PROXY_USERNAME: proxy authentication username

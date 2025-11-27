@@ -1,11 +1,14 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
 from app.services.excel_handler import ExcelHandler
 from app.services.search import SearchService
 from app.services.scraper import WebScraper
 from app.services.sg_data_api import SGDataAPIService
 import asyncio
 import logging
+import json
+import uuid
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
@@ -344,3 +347,273 @@ async def get_status():
         "status": "online",
         "message": "Company enrichment service is running"
     }
+
+
+@router.post("/enrich-stream")
+async def enrich_companies_stream(file: UploadFile = File(...)):
+    """
+    Upload Excel file and enrich company data with streaming progress updates.
+    Returns Server-Sent Events (SSE) stream with progress for each company.
+
+    Event types:
+    - session_start: Processing started, includes total count
+    - company_processed: Single company completed, includes full data
+    - complete: All processing finished
+    - error: An error occurred
+
+    Args:
+        file: Excel file containing company information
+
+    Returns:
+        SSE stream with progress events
+    """
+    # Validate file type
+    if not excel_handler.validate_excel_file(file.filename, file.content_type):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Please upload an Excel file (.xlsx or .xls)"
+        )
+
+    # Read file content
+    content = await file.read()
+
+    # Parse Excel file
+    try:
+        companies = excel_handler.parse_excel(content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not companies:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid company data found in the Excel file"
+        )
+
+    session_id = str(uuid.uuid4())
+    original_filename = file.filename
+
+    async def event_generator():
+        # Initialize services
+        search_service = SearchService()
+        scraper = WebScraper()
+        api_service = SGDataAPIService()
+
+        try:
+            # Yield session start event
+            yield {
+                "event": "message",
+                "data": json.dumps({
+                    "type": "session_start",
+                    "session_id": session_id,
+                    "total_companies": len(companies),
+                    "original_filename": original_filename
+                })
+            }
+
+            # Process each company and yield progress
+            for idx, company in enumerate(companies):
+                try:
+                    enriched = await enrich_single_company(
+                        company,
+                        search_service,
+                        scraper,
+                        api_service,
+                        idx,
+                        len(companies)
+                    )
+
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({
+                            "type": "company_processed",
+                            "index": idx,
+                            "total": len(companies),
+                            "data": enriched
+                        })
+                    }
+
+                except Exception as e:
+                    logger.error(f"Error processing company {company['name']}: {str(e)}")
+                    # Yield error data for this company but continue processing
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({
+                            "type": "company_processed",
+                            "index": idx,
+                            "total": len(companies),
+                            "data": {
+                                "name": company["name"],
+                                "uen": company["uen"],
+                                "address": company["address"],
+                                "phone_1": "",
+                                "phone_2": "",
+                                "phone_3": "",
+                                "email": "",
+                                "website": "",
+                                "status": f"Error: {str(e)}"
+                            }
+                        })
+                    }
+
+                # Small delay between companies
+                await asyncio.sleep(0.5)
+
+            # Yield completion event
+            yield {
+                "event": "message",
+                "data": json.dumps({
+                    "type": "complete",
+                    "session_id": session_id
+                })
+            }
+
+        finally:
+            # Clean up scraper
+            await scraper.close()
+
+    return EventSourceResponse(event_generator())
+
+
+async def enrich_single_company(
+    company: Dict,
+    search_service: SearchService,
+    scraper: WebScraper,
+    api_service: SGDataAPIService,
+    idx: int,
+    total: int
+) -> Dict:
+    """
+    Enrich a single company with contact information.
+
+    Args:
+        company: Company dictionary with name, uen, address
+        search_service: Search service instance
+        scraper: Web scraper instance
+        api_service: Singapore data API service instance
+        idx: Current company index (0-based)
+        total: Total number of companies
+
+    Returns:
+        Enriched company dictionary
+    """
+    logger.info(f"Processing company {idx + 1}/{total}: {company['name']}")
+
+    # Search for company websites
+    websites = await search_service.search_company_websites(
+        company['name'],
+        company['uen'],
+        company['address']
+    )
+
+    if websites:
+        logger.info(f"Found {len(websites)} websites for {company['name']}")
+
+        # Scrape websites in priority order
+        all_contacts = []
+        successful_websites = []
+        blocked_count = 0
+        have_phone = False
+        have_email = False
+
+        for website_idx, website in enumerate(websites, 1):
+            if have_phone and have_email:
+                logger.info(f"Already have phone + email, skipping remaining websites")
+                break
+
+            logger.info(f"Scraping website {website_idx}/{len(websites)}: {website}")
+            contacts = await scraper.scrape_company_contacts(website)
+
+            if contacts.get('blocked'):
+                blocked_count += 1
+                continue
+
+            got_phone = bool(contacts.get('phone') or contacts.get('all_phones'))
+            got_email = bool(contacts.get('email') or contacts.get('all_emails'))
+            has_data = got_phone or got_email
+
+            if has_data:
+                all_contacts.append(contacts)
+                successful_websites.append(website)
+                if got_phone:
+                    have_phone = True
+                if got_email:
+                    have_email = True
+
+            if not (have_phone and have_email):
+                await asyncio.sleep(0.5)
+
+        # Aggregate results
+        aggregated = _aggregate_contacts(all_contacts)
+
+        # API fallback if needed
+        all_blocked = blocked_count == len(websites)
+        no_data = not any([aggregated.get('phone'), aggregated.get('email')])
+
+        if all_blocked or no_data:
+            logger.info(f"Trying API fallback for {company['name']}")
+            api_result = await api_service.search_company(company['name'], company['uen'])
+            if api_result:
+                if api_result.get('phone') and not aggregated.get('phone'):
+                    aggregated['phone'] = api_result['phone']
+                    if aggregated['phone'] not in aggregated.get('all_phones', []):
+                        aggregated.setdefault('all_phones', []).insert(0, aggregated['phone'])
+                if api_result.get('email') and not aggregated.get('email'):
+                    aggregated['email'] = api_result['email']
+
+        # Build status
+        has_contact_info = any([aggregated.get('phone'), aggregated.get('email')])
+        if has_contact_info:
+            if blocked_count > 0:
+                status = f'Success (from {len(successful_websites)}/{len(websites)} websites, {blocked_count} blocked)'
+            else:
+                status = f'Success (from {len(successful_websites)}/{len(websites)} websites)'
+        else:
+            if all_blocked:
+                status = f'All {len(websites)} websites blocked'
+            else:
+                status = f'No contact data found'
+
+        websites_text = '\n'.join(successful_websites) if successful_websites else websites[0] if websites else ''
+        all_phones = aggregated.get('all_phones', [])
+
+        return {
+            'name': company['name'],
+            'uen': company['uen'],
+            'address': company['address'],
+            'phone_1': all_phones[0] if len(all_phones) > 0 else '',
+            'phone_2': all_phones[1] if len(all_phones) > 1 else '',
+            'phone_3': all_phones[2] if len(all_phones) > 2 else '',
+            'email': aggregated.get('email', ''),
+            'website': websites_text,
+            'status': status
+        }
+
+    else:
+        # No websites found - try API
+        logger.warning(f"No websites found for {company['name']}, trying API...")
+        api_result = await api_service.search_company(company['name'], company['uen'])
+
+        if api_result and (api_result.get('phone') or api_result.get('email')):
+            return {
+                'name': company['name'],
+                'uen': company['uen'],
+                'address': company['address'],
+                'phone_1': api_result.get('phone', ''),
+                'phone_2': '',
+                'phone_3': '',
+                'email': api_result.get('email', ''),
+                'website': api_result.get('registry_url', ''),
+                'status': f"Data from API ({api_result.get('source', 'unknown')})"
+            }
+        else:
+            return {
+                'name': company['name'],
+                'uen': company['uen'],
+                'address': company['address'],
+                'phone_1': '',
+                'phone_2': '',
+                'phone_3': '',
+                'email': '',
+                'website': '',
+                'status': 'No websites found'
+            }
