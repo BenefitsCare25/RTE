@@ -213,16 +213,17 @@ class WebScraper:
             # Apply stealth scripts before navigation
             await self._apply_stealth_scripts(page)
 
-            # Set longer timeout for Cloudflare challenges
-            page.set_default_timeout(60000)
+            # Disable timeout completely to prevent frontend disruption
+            # Pages will either load successfully or fail gracefully
+            page.set_default_timeout(0)  # 0 = no timeout
 
             # Add random delay between requests to appear more human
             if self._request_count > 1:
                 await self._random_delay(1000, 3000)
 
-            # Navigate to website
+            # Navigate to website (no timeout - let it complete naturally)
             logger.info(f"Loading page: {website}")
-            await page.goto(website, wait_until='networkidle', timeout=60000)
+            await page.goto(website, wait_until='networkidle', timeout=0)
 
             # Wait for Cloudflare challenge with random variation
             logger.info("Waiting for Cloudflare challenge to resolve...")

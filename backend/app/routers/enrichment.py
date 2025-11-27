@@ -129,14 +129,21 @@ async def enrich_company_data(
             )
 
             if websites:
-                logger.info(f"Found {len(websites)} websites for {company['name']}, attempting to scrape all...")
+                logger.info(f"Found {len(websites)} websites for {company['name']}, will scrape until data found...")
 
-                # Scrape all websites and aggregate results
+                # Scrape websites in priority order, stop early when we have complete data
                 all_contacts = []
                 successful_websites = []
                 blocked_count = 0
+                have_phone = False
+                have_email = False
 
                 for website_idx, website in enumerate(websites, 1):
+                    # Early exit: stop if we already have both phone and email
+                    if have_phone and have_email:
+                        logger.info(f"✓ Already have phone + email, skipping remaining {len(websites) - website_idx + 1} websites")
+                        break
+
                     logger.info(f"Scraping website {website_idx}/{len(websites)}: {website}")
 
                     contacts = await scraper.scrape_company_contacts(website)
@@ -148,17 +155,26 @@ async def enrich_company_data(
                         continue
 
                     # Check if we got any useful data from this website (phone or email)
-                    has_data = any([contacts.get('phone'), contacts.get('email')])
+                    got_phone = bool(contacts.get('phone') or contacts.get('all_phones'))
+                    got_email = bool(contacts.get('email') or contacts.get('all_emails'))
+                    has_data = got_phone or got_email
 
                     if has_data:
                         logger.info(f"✓ Website {website_idx} provided data - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, All phones: {contacts.get('all_phones', [])}")
                         all_contacts.append(contacts)
                         successful_websites.append(website)
+
+                        # Track what we've found
+                        if got_phone:
+                            have_phone = True
+                        if got_email:
+                            have_email = True
                     else:
                         logger.warning(f"✗ Website {website_idx} returned no data")
 
-                    # Small delay between scraping attempts
-                    await asyncio.sleep(0.5)
+                    # Small delay between scraping attempts (only if continuing)
+                    if not (have_phone and have_email):
+                        await asyncio.sleep(0.5)
 
                 # Aggregate results from all successful sources
                 aggregated = _aggregate_contacts(all_contacts)
