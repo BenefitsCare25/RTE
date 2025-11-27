@@ -50,6 +50,8 @@ class GoogleMapsSearchService:
             logger.warning("SERPAPI_KEY not configured, skipping Google Maps search")
             return {}
 
+        logger.info(f"Google Maps search starting for: {company_name}")
+
         # Extract postal code from address
         postal_code = self._extract_postal_code(address)
 

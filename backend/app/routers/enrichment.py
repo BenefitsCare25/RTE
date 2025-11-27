@@ -267,13 +267,16 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
 
     async def event_generator():
         # Initialize services
+        logger.info(f"SSE stream starting for session {session_id}, {len(companies)} companies")
         search_service = SearchService()
         scraper = WebScraper()
         api_service = SGDataAPIService()
         maps_service = GoogleMapsSearchService()
+        logger.info("All services initialized")
 
         try:
-            # Yield session start event
+            # Yield session start event IMMEDIATELY
+            logger.info(f"Sending session_start event for {len(companies)} companies")
             yield {
                 "event": "message",
                 "data": json.dumps({
@@ -283,6 +286,7 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
                     "original_filename": original_filename
                 })
             }
+            logger.info("session_start event sent")
 
             # Process each company and yield progress
             for idx, company in enumerate(companies):
