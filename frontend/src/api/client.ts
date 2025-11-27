@@ -4,7 +4,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const api = axios.create({
   baseURL: API_URL,
-  timeout: 300000, // 5 minutes for large file processing
+  timeout: 0, // No timeout - scraper can take a long time for Cloudflare bypass
   headers: {
     'Content-Type': 'multipart/form-data',
   },
