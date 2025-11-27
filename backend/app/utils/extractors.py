@@ -1,17 +1,18 @@
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 class ContactExtractor:
     """Utility class for extracting contact information from text"""
 
-    # Singapore phone number patterns
+    # Singapore phone number patterns (valid prefixes: 6=landline, 8/9=mobile)
+    # Note: 3xxx numbers are VoIP/virtual numbers, not standard business phones
     PHONE_PATTERNS = [
         # +65 XXXX XXXX or +65-XXXX-XXXX or +65XXXXXXXX
-        r'\+65[\s-]?[3689]\d{3}[\s-]?\d{4}',
+        r'\+65[\s-]?[689]\d{3}[\s-]?\d{4}',
         # 65 XXXX XXXX or 65-XXXX-XXXX or 65XXXXXXXX
-        r'65[\s-]?[3689]\d{3}[\s-]?\d{4}',
-        # XXXX XXXX (8 digits starting with 3, 6, 8, 9)
-        r'\b[3689]\d{3}[\s-]?\d{4}\b',
+        r'65[\s-]?[689]\d{3}[\s-]?\d{4}',
+        # XXXX XXXX (8 digits starting with 6, 8, 9)
+        r'\b[689]\d{3}[\s-]?\d{4}\b',
     ]
 
     # Email pattern
@@ -61,10 +62,54 @@ class ContactExtractor:
                     phone_numbers.add(cleaned)
                 elif cleaned.startswith('65') and len(cleaned) == 10:
                     phone_numbers.add('+' + cleaned)
-                elif len(cleaned) == 8 and cleaned[0] in '3689':
+                elif len(cleaned) == 8 and cleaned[0] in '689':
                     phone_numbers.add('+65' + cleaned)
 
-        return list(phone_numbers)
+        # Filter and validate all phone numbers
+        valid_phones = []
+        for phone in phone_numbers:
+            if ContactExtractor.is_valid_sg_phone(phone):
+                valid_phones.append(phone)
+
+        # Sort by preference: landlines (6xxx) first, then mobile (8/9)
+        # Landlines are more likely to be business numbers
+        valid_phones.sort(key=lambda p: (0 if p[3] == '6' else 1, p))
+
+        return valid_phones
+
+    @staticmethod
+    def is_valid_sg_phone(phone: str) -> bool:
+        """
+        Validate if a phone number is a valid Singapore phone number
+
+        Args:
+            phone: Phone number string (should be in +65XXXXXXXX format)
+
+        Returns:
+            True if valid SG phone number (starts with 6, 8, or 9)
+        """
+        if not phone:
+            return False
+
+        # Remove all non-digit characters except +
+        cleaned = re.sub(r'[^\d+]', '', phone)
+
+        # Must start with +65
+        if not cleaned.startswith('+65'):
+            return False
+
+        # Extract the 8-digit local number
+        local_number = cleaned[3:]
+
+        # Must be exactly 8 digits
+        if len(local_number) != 8:
+            return False
+
+        # First digit must be 6, 8, or 9 (not 3 - VoIP/virtual numbers)
+        if local_number[0] not in '689':
+            return False
+
+        return True
 
     @staticmethod
     def extract_emails(text: str, prefer_business: bool = True) -> List[str]:

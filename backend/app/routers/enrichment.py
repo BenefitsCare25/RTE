@@ -134,11 +134,11 @@ async def enrich_company_data(
 
                     contacts = await scraper.scrape_company_contacts(website)
 
-                    # Check if we got any useful data from this website
-                    has_data = any([contacts.get('phone'), contacts.get('email'), contacts.get('founder')])
+                    # Check if we got any useful data from this website (phone or email)
+                    has_data = any([contacts.get('phone'), contacts.get('email')])
 
                     if has_data:
-                        logger.info(f"✓ Website {website_idx} provided data - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, Founder: {contacts.get('founder', 'N/A')}")
+                        logger.info(f"✓ Website {website_idx} provided data - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, All phones: {contacts.get('all_phones', [])}")
                         all_contacts.append(contacts)
                         successful_websites.append(website)
                     else:
@@ -150,7 +150,7 @@ async def enrich_company_data(
                 # Aggregate results from all successful sources
                 aggregated = _aggregate_contacts(all_contacts)
 
-                logger.info(f"Aggregation complete - Final results: Phone: {aggregated.get('phone', 'N/A')}, Email: {aggregated.get('email', 'N/A')}, Founder: {aggregated.get('founder', 'N/A')}")
+                logger.info(f"Aggregation complete - Final results: Phone: {aggregated.get('phone', 'N/A')}, Email: {aggregated.get('email', 'N/A')}, All phones: {aggregated.get('all_phones', [])}")
 
                 # Determine status and primary website
                 has_contact_info = any([aggregated.get('phone'), aggregated.get('email')])
@@ -161,16 +161,26 @@ async def enrich_company_data(
                 else:
                     status = f'Scraped {len(websites)} websites but no contact data found'
 
-                enriched.append({
+                # Build company record with multiple phone columns
+                # Join all successful websites with newlines for Excel display
+                websites_text = '\n'.join(successful_websites) if successful_websites else websites[0] if websites else ''
+
+                company_record = {
                     'name': company['name'],
                     'uen': company['uen'],
                     'address': company['address'],
-                    'phone': aggregated.get('phone', ''),
                     'email': aggregated.get('email', ''),
-                    'founder': aggregated.get('founder', ''),
-                    'website': primary_website,
+                    'website': websites_text,
                     'status': status
-                })
+                }
+
+                # Add individual phone columns (Phone 1, Phone 2, Phone 3)
+                all_phones = aggregated.get('all_phones', [])
+                for i in range(3):  # Support up to 3 phone numbers
+                    phone_key = f'phone_{i+1}'
+                    company_record[phone_key] = all_phones[i] if i < len(all_phones) else ''
+
+                enriched.append(company_record)
             else:
                 # No websites found
                 logger.warning(f"No websites found for {company['name']}")
@@ -178,9 +188,10 @@ async def enrich_company_data(
                     'name': company['name'],
                     'uen': company['uen'],
                     'address': company['address'],
-                    'phone': '',
+                    'phone_1': '',
+                    'phone_2': '',
+                    'phone_3': '',
                     'email': '',
-                    'founder': '',
                     'website': '',
                     'status': 'No websites found'
                 })
@@ -192,9 +203,10 @@ async def enrich_company_data(
                 'name': company['name'],
                 'uen': company['uen'],
                 'address': company['address'],
-                'phone': '',
+                'phone_1': '',
+                'phone_2': '',
+                'phone_3': '',
                 'email': '',
-                'founder': '',
                 'website': '',
                 'status': f'Error: {str(e)}'
             })
@@ -209,30 +221,51 @@ async def enrich_company_data(
 def _aggregate_contacts(all_contacts: List[Dict]) -> Dict:
     """
     Aggregate contact information from multiple sources
-    Takes the first valid value found for each field
+    Collects all unique phone numbers and emails across all sources
 
     Args:
         all_contacts: List of contact dictionaries from different websites
 
     Returns:
-        Aggregated contact dictionary with best available data
+        Aggregated contact dictionary with all phones and emails
     """
     aggregated = {
         'phone': None,
         'email': None,
-        'founder': None
+        'all_phones': [],
+        'all_emails': []
     }
 
-    # Collect first valid value for each field
+    # Collect all unique phones and emails from all sources
+    seen_phones = set()
+    seen_emails = set()
+
     for contacts in all_contacts:
-        if not aggregated['phone'] and contacts.get('phone'):
-            aggregated['phone'] = contacts['phone']
+        # Collect all phones
+        all_phones = contacts.get('all_phones', [])
+        if contacts.get('phone') and contacts['phone'] not in all_phones:
+            all_phones = [contacts['phone']] + all_phones
 
-        if not aggregated['email'] and contacts.get('email'):
-            aggregated['email'] = contacts['email']
+        for phone in all_phones:
+            if phone and phone not in seen_phones:
+                seen_phones.add(phone)
+                aggregated['all_phones'].append(phone)
 
-        if not aggregated['founder'] and contacts.get('founder'):
-            aggregated['founder'] = contacts['founder']
+        # Collect all emails
+        all_emails = contacts.get('all_emails', [])
+        if contacts.get('email') and contacts['email'] not in all_emails:
+            all_emails = [contacts['email']] + all_emails
+
+        for email in all_emails:
+            if email and email not in seen_emails:
+                seen_emails.add(email)
+                aggregated['all_emails'].append(email)
+
+    # Set primary phone and email (first in list)
+    if aggregated['all_phones']:
+        aggregated['phone'] = aggregated['all_phones'][0]
+    if aggregated['all_emails']:
+        aggregated['email'] = aggregated['all_emails'][0]
 
     return aggregated
 

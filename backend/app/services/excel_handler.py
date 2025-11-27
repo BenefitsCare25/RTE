@@ -118,14 +118,15 @@ class ExcelHandler:
             BytesIO object containing the Excel file
         """
         try:
-            # Define column order
+            # Define column order (now with multiple phone columns, no founder)
             columns = [
                 'name',
                 'uen',
                 'address',
-                'phone',
+                'phone_1',
+                'phone_2',
+                'phone_3',
                 'email',
-                'founder',
                 'website',
                 'status'
             ]
@@ -146,10 +147,11 @@ class ExcelHandler:
                 'Company Name',
                 'UEN Number',
                 'Address',
-                'Phone Number',
+                'Phone 1',
+                'Phone 2',
+                'Phone 3',
                 'Email Address',
-                'Founder/Director',
-                'Website',
+                'Website(s)',
                 'Enrichment Status'
             ]
 

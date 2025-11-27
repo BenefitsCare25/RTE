@@ -87,8 +87,9 @@ class WebScraper:
                 return {
                     'phone': None,
                     'email': None,
-                    'founder': None,
-                    'website': website
+                    'website': website,
+                    'all_phones': [],
+                    'all_emails': []
                 }
 
             contacts = self.extractor.extract_all_contacts(main_page_content)
@@ -108,30 +109,14 @@ class WebScraper:
                 else:
                     logger.info("No contact page found")
 
-            # Try About page if still no founder information
-            if not contacts['founder']:
-                logger.info("No founder found, searching for about page...")
-                about_page_url = await self._find_about_page(page, website)
-
-                if about_page_url:
-                    logger.info(f"Found about page: {about_page_url}")
-                    await page.goto(about_page_url, wait_until='domcontentloaded')
-                    about_page_content = await page.content()
-                    about_contacts = self.extractor.extract_all_contacts(about_page_content)
-
-                    if about_contacts['founder']:
-                        logger.info(f"Found founder on about page: {about_contacts['founder']}")
-                        contacts['founder'] = about_contacts['founder']
-                else:
-                    logger.info("No about page found")
-
             await page.close()
 
             final_result = {
                 'phone': contacts['phone'],
                 'email': contacts['email'],
-                'founder': contacts['founder'],
-                'website': website
+                'website': website,
+                'all_phones': contacts.get('all_phones', []),
+                'all_emails': contacts.get('all_emails', [])
             }
             logger.info(f"Final scraping result for {website}: {final_result}")
             return final_result
@@ -141,8 +126,9 @@ class WebScraper:
             return {
                 'phone': None,
                 'email': None,
-                'founder': None,
-                'website': website
+                'website': website,
+                'all_phones': [],
+                'all_emails': []
             }
 
     async def _find_contact_page(self, page: Page, base_url: str) -> Optional[str]:
@@ -190,52 +176,6 @@ class WebScraper:
 
         return None
 
-    async def _find_about_page(self, page: Page, base_url: str) -> Optional[str]:
-        """
-        Find about page URL
-
-        Args:
-            page: Playwright page object
-            base_url: Base website URL
-
-        Returns:
-            About page URL if found
-        """
-        try:
-            # Common about page patterns
-            about_selectors = [
-                'a[href*="about"]',
-                'a[href*="About"]',
-                'a[href*="ABOUT"]',
-                'a[href*="team"]',
-                'a[href*="our-story"]',
-                'a:has-text("About")',
-                'a:has-text("About Us")',
-                'a:has-text("Our Team")',
-                'a:has-text("Our Story")',
-            ]
-
-            for selector in about_selectors:
-                try:
-                    element = await page.query_selector(selector)
-                    if element:
-                        href = await element.get_attribute('href')
-                        if href:
-                            # Handle relative URLs
-                            if href.startswith('/'):
-                                return base_url.rstrip('/') + href
-                            elif href.startswith('http'):
-                                return href
-                            else:
-                                return base_url.rstrip('/') + '/' + href
-                except:
-                    continue
-
-        except Exception as e:
-            logger.error(f"Error finding about page: {str(e)}")
-
-        return None
-
     async def scrape_multiple_companies(
         self,
         websites: List[str],
@@ -266,8 +206,9 @@ class WebScraper:
                     results.append({
                         'phone': None,
                         'email': None,
-                        'founder': None,
-                        'website': None
+                        'website': None,
+                        'all_phones': [],
+                        'all_emails': []
                     })
                 else:
                     results.append(result)
