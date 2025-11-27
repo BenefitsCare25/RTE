@@ -574,29 +574,24 @@ class WebScraper:
     async def scrape_multiple_companies(
         self,
         websites: List[str],
-        batch_size: int = 3
+        batch_size: int = 1  # Process one at a time to avoid FlareSolverr memory issues
     ) -> List[Dict[str, any]]:
-        """Scrape multiple company websites with batching"""
+        """Scrape multiple company websites sequentially to conserve memory"""
         results = []
 
-        for i in range(0, len(websites), batch_size):
-            batch = websites[i:i + batch_size]
-            batch_results = await asyncio.gather(
-                *[self.scrape_company_contacts(url) for url in batch],
-                return_exceptions=True
-            )
-
-            for result in batch_results:
-                if isinstance(result, Exception):
-                    results.append({
-                        'phone': None,
-                        'email': None,
-                        'website': None,
-                        'all_phones': [],
-                        'all_emails': [],
-                        'blocked': False
-                    })
-                else:
-                    results.append(result)
+        for website in websites:
+            try:
+                result = await self.scrape_company_contacts(website)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Error scraping {website}: {e}")
+                results.append({
+                    'phone': None,
+                    'email': None,
+                    'website': website,
+                    'all_phones': [],
+                    'all_emails': [],
+                    'blocked': False
+                })
 
         return results
