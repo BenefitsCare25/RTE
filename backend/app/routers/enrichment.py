@@ -5,6 +5,7 @@ from app.services.excel_handler import ExcelHandler
 from app.services.search import SearchService
 from app.services.scraper import WebScraper
 from app.services.sg_data_api import SGDataAPIService
+from app.services.google_maps_search import GoogleMapsSearchService
 import asyncio
 import logging
 import json
@@ -58,10 +59,11 @@ async def enrich_companies(file: UploadFile = File(...)):
             )
 
         # Initialize services
-        logger.info("Initializing search, scraper, and API services")
+        logger.info("Initializing search, scraper, API, and Google Maps services")
         search_service = SearchService()
         scraper = WebScraper()
         api_service = SGDataAPIService()
+        maps_service = GoogleMapsSearchService()
 
         # Enrich companies
         logger.info(f"Starting enrichment process for {len(companies)} companies")
@@ -69,7 +71,8 @@ async def enrich_companies(file: UploadFile = File(...)):
             companies,
             search_service,
             scraper,
-            api_service
+            api_service,
+            maps_service
         )
 
         # Close scraper
@@ -102,18 +105,23 @@ async def enrich_company_data(
     companies: List[Dict],
     search_service: SearchService,
     scraper: WebScraper,
-    api_service: SGDataAPIService
+    api_service: SGDataAPIService,
+    maps_service: GoogleMapsSearchService = None
 ) -> List[Dict]:
     """
-    Enrich company data with contact information
-    Scrapes multiple websites per company to maximize data extraction success
-    Falls back to APIs when scraping is blocked
+    Enrich company data with contact information using Google Maps as primary source.
+
+    NEW FLOW:
+    1. Google Maps search (primary) - uses company name + address/postal code
+    2. Web search + scraping (fallback) - if Maps fails
+    3. API fallback (last resort)
 
     Args:
         companies: List of company dictionaries
         search_service: Search service instance
         scraper: Web scraper instance
         api_service: Singapore data API service instance
+        maps_service: Google Maps search service instance
 
     Returns:
         List of enriched company dictionaries
@@ -122,153 +130,18 @@ async def enrich_company_data(
 
     for idx, company in enumerate(companies, 1):
         try:
-            logger.info(f"Processing company {idx}/{len(companies)}: {company['name']}")
-
-            # Search for company websites (returns list of up to 5 URLs)
-            websites = await search_service.search_company_websites(
-                company['name'],
-                company['uen'],
-                company['address']
+            enriched_company = await enrich_single_company(
+                company,
+                search_service,
+                scraper,
+                api_service,
+                idx - 1,  # 0-based index
+                len(companies),
+                maps_service
             )
-
-            if websites:
-                logger.info(f"Found {len(websites)} websites for {company['name']}, will scrape until data found...")
-
-                # Scrape websites in priority order, stop early when we have complete data
-                all_contacts = []
-                successful_websites = []
-                blocked_count = 0
-                have_phone = False
-                have_email = False
-
-                for website_idx, website in enumerate(websites, 1):
-                    # Early exit: stop if we already have both phone and email
-                    if have_phone and have_email:
-                        logger.info(f"✓ Already have phone + email, skipping remaining {len(websites) - website_idx + 1} websites")
-                        break
-
-                    logger.info(f"Scraping website {website_idx}/{len(websites)}: {website}")
-
-                    contacts = await scraper.scrape_company_contacts(website)
-
-                    # Check if blocked by Cloudflare/bot protection
-                    if contacts.get('blocked'):
-                        blocked_count += 1
-                        logger.warning(f"✗ Website {website_idx} blocked by protection")
-                        continue
-
-                    # Check if we got any useful data from this website (phone or email)
-                    got_phone = bool(contacts.get('phone') or contacts.get('all_phones'))
-                    got_email = bool(contacts.get('email') or contacts.get('all_emails'))
-                    has_data = got_phone or got_email
-
-                    if has_data:
-                        logger.info(f"✓ Website {website_idx} provided data - Phone: {contacts.get('phone', 'N/A')}, Email: {contacts.get('email', 'N/A')}, All phones: {contacts.get('all_phones', [])}")
-                        all_contacts.append(contacts)
-                        successful_websites.append(website)
-
-                        # Track what we've found
-                        if got_phone:
-                            have_phone = True
-                        if got_email:
-                            have_email = True
-                    else:
-                        logger.warning(f"✗ Website {website_idx} returned no data")
-
-                    # Small delay between scraping attempts (only if continuing)
-                    if not (have_phone and have_email):
-                        await asyncio.sleep(0.5)
-
-                # Aggregate results from all successful sources
-                aggregated = _aggregate_contacts(all_contacts)
-
-                # If all sites were blocked or no data found, try API fallback
-                all_blocked = blocked_count == len(websites)
-                no_data = not any([aggregated.get('phone'), aggregated.get('email')])
-
-                if all_blocked or no_data:
-                    logger.info(f"Scraping {'blocked' if all_blocked else 'returned no data'}, trying API fallback...")
-                    api_result = await api_service.search_company(company['name'], company['uen'])
-                    if api_result:
-                        logger.info(f"API fallback found data from: {api_result.get('source')}")
-                        # Merge API data
-                        if api_result.get('phone') and not aggregated.get('phone'):
-                            aggregated['phone'] = api_result['phone']
-                            if aggregated['phone'] not in aggregated.get('all_phones', []):
-                                aggregated.setdefault('all_phones', []).insert(0, aggregated['phone'])
-                        if api_result.get('email') and not aggregated.get('email'):
-                            aggregated['email'] = api_result['email']
-
-                logger.info(f"Aggregation complete - Final results: Phone: {aggregated.get('phone', 'N/A')}, Email: {aggregated.get('email', 'N/A')}, All phones: {aggregated.get('all_phones', [])}")
-
-                # Determine status and primary website
-                has_contact_info = any([aggregated.get('phone'), aggregated.get('email')])
-                primary_website = successful_websites[0] if successful_websites else websites[0]
-
-                if has_contact_info:
-                    if blocked_count > 0:
-                        status = f'Success (from {len(successful_websites)}/{len(websites)} websites, {blocked_count} blocked)'
-                    else:
-                        status = f'Success (from {len(successful_websites)}/{len(websites)} websites)'
-                else:
-                    if all_blocked:
-                        status = f'All {len(websites)} websites blocked by Cloudflare'
-                    else:
-                        status = f'Scraped {len(websites)} websites but no contact data found'
-
-                # Build company record with multiple phone columns
-                # Join all successful websites with newlines for Excel display
-                websites_text = '\n'.join(successful_websites) if successful_websites else websites[0] if websites else ''
-
-                company_record = {
-                    'name': company['name'],
-                    'uen': company['uen'],
-                    'address': company['address'],
-                    'email': aggregated.get('email', ''),
-                    'website': websites_text,
-                    'status': status
-                }
-
-                # Add individual phone columns (Phone 1, Phone 2, Phone 3)
-                all_phones = aggregated.get('all_phones', [])
-                for i in range(3):  # Support up to 3 phone numbers
-                    phone_key = f'phone_{i+1}'
-                    company_record[phone_key] = all_phones[i] if i < len(all_phones) else ''
-
-                enriched.append(company_record)
-            else:
-                # No websites found - try API as primary source
-                logger.warning(f"No websites found for {company['name']}, trying API...")
-                api_result = await api_service.search_company(company['name'], company['uen'])
-
-                if api_result and (api_result.get('phone') or api_result.get('email')):
-                    logger.info(f"API found data for {company['name']}")
-                    enriched.append({
-                        'name': company['name'],
-                        'uen': company['uen'],
-                        'address': company['address'],
-                        'phone_1': api_result.get('phone', ''),
-                        'phone_2': '',
-                        'phone_3': '',
-                        'email': api_result.get('email', ''),
-                        'website': api_result.get('registry_url', ''),
-                        'status': f"Data from API ({api_result.get('source', 'unknown')})"
-                    })
-                else:
-                    enriched.append({
-                        'name': company['name'],
-                        'uen': company['uen'],
-                        'address': company['address'],
-                        'phone_1': '',
-                        'phone_2': '',
-                        'phone_3': '',
-                        'email': '',
-                        'website': '',
-                        'status': 'No websites found'
-                    })
+            enriched.append(enriched_company)
 
         except Exception as e:
-            # Error during enrichment
             logger.error(f"Error enriching {company['name']}: {str(e)}", exc_info=True)
             enriched.append({
                 'name': company['name'],
@@ -397,6 +270,7 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
         search_service = SearchService()
         scraper = WebScraper()
         api_service = SGDataAPIService()
+        maps_service = GoogleMapsSearchService()
 
         try:
             # Yield session start event
@@ -419,7 +293,8 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
                         scraper,
                         api_service,
                         idx,
-                        len(companies)
+                        len(companies),
+                        maps_service
                     )
 
                     yield {
@@ -480,10 +355,17 @@ async def enrich_single_company(
     scraper: WebScraper,
     api_service: SGDataAPIService,
     idx: int,
-    total: int
+    total: int,
+    maps_service: GoogleMapsSearchService = None
 ) -> Dict:
     """
     Enrich a single company with contact information.
+
+    NEW FLOW (Google Maps Primary):
+    1. Search Google Maps using company name + address/postal code
+    2. Get phone and website directly from Maps result
+    3. If website found, scrape it for email only
+    4. Fallback to web search if Maps fails
 
     Args:
         company: Company dictionary with name, uen, address
@@ -492,128 +374,178 @@ async def enrich_single_company(
         api_service: Singapore data API service instance
         idx: Current company index (0-based)
         total: Total number of companies
+        maps_service: Google Maps search service instance
 
     Returns:
         Enriched company dictionary
     """
     logger.info(f"Processing company {idx + 1}/{total}: {company['name']}")
 
-    # Search for company websites
-    websites = await search_service.search_company_websites(
-        company['name'],
-        company['uen'],
-        company['address']
-    )
+    phone = None
+    email = None
+    website = None
+    all_phones = []
+    status_parts = []
 
-    if websites:
-        logger.info(f"Found {len(websites)} websites for {company['name']}")
+    # ============================================
+    # STEP 1: Google Maps Search (PRIMARY METHOD)
+    # ============================================
+    if maps_service:
+        logger.info(f"Step 1: Searching Google Maps for {company['name']}")
+        maps_result = await maps_service.search_business(
+            company['name'],
+            company['address'],
+            company['uen']
+        )
 
-        # Scrape websites in priority order
-        all_contacts = []
-        successful_websites = []
-        blocked_count = 0
-        have_phone = False
-        have_email = False
+        if maps_result:
+            maps_phone = maps_result.get('phone')
+            maps_website = maps_result.get('website')
+            match_score = maps_result.get('match_score', 0)
 
-        for website_idx, website in enumerate(websites, 1):
-            if have_phone and have_email:
-                logger.info(f"Already have phone + email, skipping remaining websites")
-                break
+            logger.info(f"Google Maps result: Phone={maps_phone}, Website={maps_website}, Score={match_score}")
 
-            logger.info(f"Scraping website {website_idx}/{len(websites)}: {website}")
-            contacts = await scraper.scrape_company_contacts(website)
+            if maps_phone:
+                phone = maps_phone
+                all_phones.append(maps_phone)
+                status_parts.append('phone from Google Maps')
 
-            if contacts.get('blocked'):
-                blocked_count += 1
-                continue
+            if maps_website:
+                website = maps_website
 
-            got_phone = bool(contacts.get('phone') or contacts.get('all_phones'))
-            got_email = bool(contacts.get('email') or contacts.get('all_emails'))
-            has_data = got_phone or got_email
+                # ============================================
+                # STEP 2: Scrape Website for Email
+                # ============================================
+                logger.info(f"Step 2: Scraping {maps_website} for email")
+                scraped_email = await scraper.scrape_email_only(maps_website)
 
-            if has_data:
-                all_contacts.append(contacts)
-                successful_websites.append(website)
-                if got_phone:
-                    have_phone = True
-                if got_email:
-                    have_email = True
+                if scraped_email:
+                    email = scraped_email
+                    status_parts.append('email from website')
+                    logger.info(f"Found email: {email}")
+                else:
+                    logger.info(f"No email found on {maps_website}")
 
-            if not (have_phone and have_email):
-                await asyncio.sleep(0.5)
+            # If we have phone from Maps, consider it a success even without email
+            if phone:
+                if not email:
+                    status_parts.append('no email found')
 
-        # Aggregate results
-        aggregated = _aggregate_contacts(all_contacts)
+    # ============================================
+    # STEP 3: Fallback to Web Search if needed
+    # ============================================
+    if not phone and not website:
+        logger.info(f"Step 3: Fallback to web search for {company['name']}")
 
-        # API fallback if needed
-        all_blocked = blocked_count == len(websites)
-        no_data = not any([aggregated.get('phone'), aggregated.get('email')])
+        websites = await search_service.search_company_websites(
+            company['name'],
+            company['uen'],
+            company['address']
+        )
 
-        if all_blocked or no_data:
-            logger.info(f"Trying API fallback for {company['name']}")
-            api_result = await api_service.search_company(company['name'], company['uen'])
-            if api_result:
-                if api_result.get('phone') and not aggregated.get('phone'):
-                    aggregated['phone'] = api_result['phone']
-                    if aggregated['phone'] not in aggregated.get('all_phones', []):
-                        aggregated.setdefault('all_phones', []).insert(0, aggregated['phone'])
-                if api_result.get('email') and not aggregated.get('email'):
-                    aggregated['email'] = api_result['email']
+        if websites:
+            logger.info(f"Found {len(websites)} websites via web search")
 
-        # Build status
-        has_contact_info = any([aggregated.get('phone'), aggregated.get('email')])
-        if has_contact_info:
+            # Scrape websites until we have phone + email
+            all_contacts = []
+            successful_websites = []
+            blocked_count = 0
+            have_phone = bool(phone)
+            have_email = bool(email)
+
+            for website_idx, site_url in enumerate(websites, 1):
+                if have_phone and have_email:
+                    break
+
+                logger.info(f"Scraping website {website_idx}/{len(websites)}: {site_url}")
+                contacts = await scraper.scrape_company_contacts(site_url)
+
+                if contacts.get('blocked'):
+                    blocked_count += 1
+                    continue
+
+                got_phone = bool(contacts.get('phone') or contacts.get('all_phones'))
+                got_email = bool(contacts.get('email') or contacts.get('all_emails'))
+
+                if got_phone or got_email:
+                    all_contacts.append(contacts)
+                    successful_websites.append(site_url)
+
+                    if got_phone and not have_phone:
+                        have_phone = True
+                    if got_email and not have_email:
+                        have_email = True
+
+                if not (have_phone and have_email):
+                    await asyncio.sleep(0.5)
+
+            # Aggregate results from web scraping
+            aggregated = _aggregate_contacts(all_contacts)
+
+            if not phone and aggregated.get('phone'):
+                phone = aggregated['phone']
+                status_parts.append('phone from web search')
+
+            if not email and aggregated.get('email'):
+                email = aggregated['email']
+                status_parts.append('email from web search')
+
+            # Collect all phones
+            for p in aggregated.get('all_phones', []):
+                if p and p not in all_phones:
+                    all_phones.append(p)
+
+            # Set website from successful scrapes
+            if not website and successful_websites:
+                website = '\n'.join(successful_websites)
+
+            # Update status for blocked sites
             if blocked_count > 0:
-                status = f'Success (from {len(successful_websites)}/{len(websites)} websites, {blocked_count} blocked)'
-            else:
-                status = f'Success (from {len(successful_websites)}/{len(websites)} websites)'
-        else:
-            if all_blocked:
-                status = f'All {len(websites)} websites blocked'
-            else:
-                status = f'No contact data found'
+                status_parts.append(f'{blocked_count} sites blocked')
 
-        websites_text = '\n'.join(successful_websites) if successful_websites else websites[0] if websites else ''
-        all_phones = aggregated.get('all_phones', [])
-
-        return {
-            'name': company['name'],
-            'uen': company['uen'],
-            'address': company['address'],
-            'phone_1': all_phones[0] if len(all_phones) > 0 else '',
-            'phone_2': all_phones[1] if len(all_phones) > 1 else '',
-            'phone_3': all_phones[2] if len(all_phones) > 2 else '',
-            'email': aggregated.get('email', ''),
-            'website': websites_text,
-            'status': status
-        }
-
-    else:
-        # No websites found - try API
-        logger.warning(f"No websites found for {company['name']}, trying API...")
+    # ============================================
+    # STEP 4: API Fallback (last resort)
+    # ============================================
+    if not phone and not email:
+        logger.info(f"Step 4: API fallback for {company['name']}")
         api_result = await api_service.search_company(company['name'], company['uen'])
 
-        if api_result and (api_result.get('phone') or api_result.get('email')):
-            return {
-                'name': company['name'],
-                'uen': company['uen'],
-                'address': company['address'],
-                'phone_1': api_result.get('phone', ''),
-                'phone_2': '',
-                'phone_3': '',
-                'email': api_result.get('email', ''),
-                'website': api_result.get('registry_url', ''),
-                'status': f"Data from API ({api_result.get('source', 'unknown')})"
-            }
-        else:
-            return {
-                'name': company['name'],
-                'uen': company['uen'],
-                'address': company['address'],
-                'phone_1': '',
-                'phone_2': '',
-                'phone_3': '',
-                'email': '',
-                'website': '',
-                'status': 'No websites found'
-            }
+        if api_result:
+            if api_result.get('phone') and not phone:
+                phone = api_result['phone']
+                if phone not in all_phones:
+                    all_phones.insert(0, phone)
+                status_parts.append('phone from API')
+
+            if api_result.get('email') and not email:
+                email = api_result['email']
+                status_parts.append('email from API')
+
+            if not website and api_result.get('registry_url'):
+                website = api_result['registry_url']
+
+    # ============================================
+    # BUILD FINAL RESULT
+    # ============================================
+    has_data = bool(phone or email)
+
+    if has_data:
+        status = f"Success ({', '.join(status_parts)})" if status_parts else "Success"
+    else:
+        status = "No contact data found"
+
+    # Ensure phone is in all_phones
+    if phone and phone not in all_phones:
+        all_phones.insert(0, phone)
+
+    return {
+        'name': company['name'],
+        'uen': company['uen'],
+        'address': company['address'],
+        'phone_1': all_phones[0] if len(all_phones) > 0 else '',
+        'phone_2': all_phones[1] if len(all_phones) > 1 else '',
+        'phone_3': all_phones[2] if len(all_phones) > 2 else '',
+        'email': email or '',
+        'website': website or '',
+        'status': status
+    }

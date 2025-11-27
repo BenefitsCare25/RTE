@@ -571,6 +571,127 @@ class WebScraper:
 
         return None
 
+    async def scrape_email_only(self, website: str) -> Optional[str]:
+        """
+        Scrape a website specifically for email addresses.
+        Used when we already have phone from Google Maps but need email.
+
+        This is a lighter-weight scrape that focuses on:
+        1. Main page email extraction
+        2. Contact page email extraction
+
+        Args:
+            website: Company website URL
+
+        Returns:
+            Primary email address if found, None otherwise
+        """
+        try:
+            await self.initialize()
+            self._request_count += 1
+            logger.info(f"Scraping for email only: {website}")
+
+            # Rotate user agent and viewport
+            user_agent = random.choice(USER_AGENTS)
+            viewport = random.choice(VIEWPORTS)
+            domain = await self._get_domain(website)
+
+            # Create browser context
+            context = await self.browser.new_context(
+                user_agent=user_agent,
+                viewport=viewport,
+                locale='en-SG',
+                timezone_id='Asia/Singapore',
+                extra_http_headers={
+                    'Accept-Language': 'en-SG,en-US;q=0.9,en;q=0.8',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                }
+            )
+
+            # Restore cookies if available
+            if domain in self._session_cookies and self._session_cookies[domain]:
+                await context.add_cookies(self._session_cookies[domain])
+
+            page = await context.new_page()
+
+            # Apply stealth
+            if STEALTH_AVAILABLE:
+                await stealth_async(page)
+            else:
+                await self._apply_manual_stealth(page)
+
+            page.set_default_timeout(0)
+
+            # Random delay
+            if self._request_count > 1:
+                await asyncio.sleep(random.uniform(1.0, 2.5))
+
+            # Navigate to main page
+            await page.goto(website, wait_until='domcontentloaded', timeout=0)
+            await self._simulate_human_behavior(page)
+
+            # Wait for Cloudflare
+            page_accessible = await self._wait_for_cloudflare(page, max_wait=15)
+
+            if not page_accessible:
+                logger.warning(f"Email scrape blocked for {website}")
+                await context.close()
+                return None
+
+            # Extract emails from main page
+            main_content = await page.content()
+            contacts = self.extractor.extract_all_contacts(main_content)
+
+            if contacts.get('email'):
+                logger.info(f"Found email on main page: {contacts['email']}")
+                await context.close()
+                return contacts['email']
+
+            # Try contact page
+            contact_page_url = await self._find_contact_page(page, website)
+            if contact_page_url:
+                logger.info(f"Checking contact page for email: {contact_page_url}")
+                try:
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                    await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
+                    contact_content = await page.content()
+                    contacts = self.extractor.extract_all_contacts(contact_content)
+
+                    if contacts.get('email'):
+                        logger.info(f"Found email on contact page: {contacts['email']}")
+                        await context.close()
+                        return contacts['email']
+                except Exception as e:
+                    logger.warning(f"Failed to load contact page: {e}")
+
+            # Try common contact page patterns
+            common_patterns = ['/contact', '/contact-us', '/about', '/about-us']
+            from urllib.parse import urlparse, urljoin
+
+            for pattern in common_patterns:
+                try:
+                    test_url = urljoin(website, pattern)
+                    if test_url != contact_page_url:  # Don't retry same page
+                        await asyncio.sleep(random.uniform(0.5, 1.0))
+                        response = await page.goto(test_url, wait_until='domcontentloaded', timeout=15000)
+                        if response and response.ok:
+                            pattern_content = await page.content()
+                            contacts = self.extractor.extract_all_contacts(pattern_content)
+                            if contacts.get('email'):
+                                logger.info(f"Found email at {pattern}: {contacts['email']}")
+                                await context.close()
+                                return contacts['email']
+                except:
+                    continue
+
+            await context.close()
+            logger.info(f"No email found on {website}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Email scrape error for {website}: {str(e)}")
+            return None
+
     async def scrape_multiple_companies(
         self,
         websites: List[str],

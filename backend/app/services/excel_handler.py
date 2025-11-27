@@ -118,7 +118,7 @@ class ExcelHandler:
             BytesIO object containing the Excel file
         """
         try:
-            # Define column order (now with multiple phone columns, no founder)
+            # Define column order - updated with clear website/domain column
             columns = [
                 'name',
                 'uen',
@@ -143,6 +143,7 @@ class ExcelHandler:
             df = df[columns]
 
             # Rename columns for better readability
+            # Updated: "Website(s)" -> "Company Website" for clarity
             df.columns = [
                 'Company Name',
                 'UEN Number',
@@ -151,7 +152,7 @@ class ExcelHandler:
                 'Phone 2',
                 'Phone 3',
                 'Email Address',
-                'Website(s)',
+                'Company Website',
                 'Enrichment Status'
             ]
 
@@ -168,13 +169,24 @@ class ExcelHandler:
                         df[col].astype(str).map(len).max(),
                         len(col)
                     )
-                    worksheet.column_dimensions[chr(64 + idx)].width = min(max_length + 2, 50)
+                    # Use proper column letter conversion for columns beyond Z
+                    col_letter = ExcelHandler._get_column_letter(idx)
+                    worksheet.column_dimensions[col_letter].width = min(max_length + 2, 50)
 
             output.seek(0)
             return output
 
         except Exception as e:
             raise ValueError(f"Error creating Excel file: {str(e)}")
+
+    @staticmethod
+    def _get_column_letter(col_idx: int) -> str:
+        """Convert column index to Excel column letter (1=A, 27=AA, etc.)"""
+        result = ""
+        while col_idx > 0:
+            col_idx, remainder = divmod(col_idx - 1, 26)
+            result = chr(65 + remainder) + result
+        return result
 
     @staticmethod
     def validate_excel_file(filename: str, content_type: str) -> bool:
