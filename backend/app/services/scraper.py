@@ -497,11 +497,14 @@ class WebScraper:
                     logger.info(f"Found contact page: {contact_page_url}")
                     await asyncio.sleep(random.uniform(1, 2))
                     await self._simulate_human_behavior(page)
-                    await page.goto(contact_page_url, wait_until='domcontentloaded')
-                    await self._simulate_human_behavior(page)
-                    contact_page_content = await page.content()
-                    contacts = self.extractor.extract_all_contacts(contact_page_content)
-                    logger.info(f"Contact page: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+                    try:
+                        await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
+                        await asyncio.sleep(1)  # Wait for page to settle
+                        contact_page_content = await page.content()
+                        contacts = self.extractor.extract_all_contacts(contact_page_content)
+                        logger.info(f"Contact page: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+                    except Exception as e:
+                        logger.warning(f"Failed to load contact page {contact_page_url}: {e}")
 
             await context.close()
 
