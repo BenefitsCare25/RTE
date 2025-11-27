@@ -16,5 +16,3 @@ services:
         sync: false
       - key: ENVIRONMENT
         value: production
-      - key: FLARESOLVERR_URL
-        value: http://localhost:8191/v1
