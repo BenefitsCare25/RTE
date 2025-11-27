@@ -350,7 +350,13 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
             # Clean up scraper
             await scraper.close()
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering on Render
+        }
+    )
 
 
 async def enrich_single_company(
