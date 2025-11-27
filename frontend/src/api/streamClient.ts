@@ -46,12 +46,16 @@ export async function enrichCompaniesWithProgress(
   formData.append('file', file);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  console.log('[SSE] Starting request to:', `${API_URL}/api/enrich-stream`);
 
   try {
     const response = await fetch(`${API_URL}/api/enrich-stream`, {
       method: 'POST',
       body: formData,
     });
+
+    console.log('[SSE] Response status:', response.status);
+    console.log('[SSE] Response headers:', Object.fromEntries(response.headers.entries()));
 
     if (!response.ok) {
       // Try to parse error message from response
@@ -73,11 +77,13 @@ export async function enrichCompaniesWithProgress(
     }
 
     let buffer = '';
+    let chunkCount = 0;
 
     while (true) {
       const { done, value } = await reader.read();
 
       if (done) {
+        console.log('[SSE] Stream ended. Total chunks received:', chunkCount);
         // Stream ended - check if we have any remaining data in buffer
         if (buffer.trim()) {
           processBuffer(buffer, onProgress);
@@ -85,7 +91,10 @@ export async function enrichCompaniesWithProgress(
         break;
       }
 
-      buffer += decoder.decode(value, { stream: true });
+      chunkCount++;
+      const chunk = decoder.decode(value, { stream: true });
+      console.log(`[SSE] Chunk ${chunkCount} received:`, chunk.substring(0, 200));
+      buffer += chunk;
 
       // Parse SSE events from buffer
       // SSE format: "data: {...}\n\n"
@@ -98,6 +107,7 @@ export async function enrichCompaniesWithProgress(
       }
     }
   } catch (error) {
+    console.error('[SSE] Error:', error);
     onError(error as Error);
   }
 }
@@ -107,14 +117,16 @@ export async function enrichCompaniesWithProgress(
  */
 function processBuffer(eventBlock: string, onProgress: (event: ProgressEvent) => void): void {
   const lines = eventBlock.split('\n');
+  console.log('[SSE] Processing event block:', eventBlock.substring(0, 100));
 
   for (const line of lines) {
     if (line.startsWith('data: ')) {
       try {
         const data = JSON.parse(line.slice(6));
+        console.log('[SSE] Parsed event:', data.type, data);
         onProgress(data);
       } catch (e) {
-        console.error('Failed to parse SSE data:', line, e);
+        console.error('[SSE] Failed to parse SSE data:', line, e);
       }
     }
   }
