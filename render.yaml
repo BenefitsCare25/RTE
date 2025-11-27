@@ -16,3 +16,5 @@ services:
         sync: false
       - key: ENVIRONMENT
         value: production
+      - key: FLARESOLVERR_URL
+        sync: false
