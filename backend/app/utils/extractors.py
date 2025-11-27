@@ -24,6 +24,13 @@ class ContactExtractor:
         'example.com', 'test.com', 'domain.com'
     ]
 
+    # Directory/aggregator site emails to exclude (these are the directory's contact, not the company's)
+    DIRECTORY_EMAIL_DOMAINS = [
+        'sgpbusiness.com', 'sgpgrid.com', 'singaporedirectory.com',
+        'yellowpages.com.sg', 'streetdirectory.com', 'sgpcompanies.com',
+        'bizfile.gov.sg', 'acra.gov.sg'
+    ]
+
     # Founder/director title patterns
     FOUNDER_TITLES = [
         r'(?:founder|co-founder|cofounder)',
@@ -121,13 +128,23 @@ class ContactExtractor:
             prefer_business: If True, prioritize business emails over generic ones
 
         Returns:
-            List of found email addresses
+            List of found email addresses (excludes directory site emails)
         """
         if not text:
             return []
 
         matches = re.findall(ContactExtractor.EMAIL_PATTERN, text, re.IGNORECASE)
         emails = list(set(matches))
+
+        # Filter out directory/aggregator site emails entirely
+        # These are never the company's real email
+        filtered_emails = []
+        for email in emails:
+            domain = email.split('@')[1].lower()
+            if domain not in ContactExtractor.DIRECTORY_EMAIL_DOMAINS:
+                filtered_emails.append(email)
+
+        emails = filtered_emails
 
         if prefer_business:
             # Separate business and generic emails
