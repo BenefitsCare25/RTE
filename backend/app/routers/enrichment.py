@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from app.services.excel_handler import ExcelHandler
 from app.services.search import SearchService
 from app.services.scraper import WebScraper
+from app.services.sg_data_api import SGDataAPIService
 import asyncio
 import logging
 from typing import List, Dict
@@ -54,16 +55,18 @@ async def enrich_companies(file: UploadFile = File(...)):
             )
 
         # Initialize services
-        logger.info("Initializing search and scraper services")
+        logger.info("Initializing search, scraper, and API services")
         search_service = SearchService()
         scraper = WebScraper()
+        api_service = SGDataAPIService()
 
         # Enrich companies
         logger.info(f"Starting enrichment process for {len(companies)} companies")
         enriched_companies = await enrich_company_data(
             companies,
             search_service,
-            scraper
+            scraper,
+            api_service
         )
 
         # Close scraper
@@ -95,16 +98,19 @@ async def enrich_companies(file: UploadFile = File(...)):
 async def enrich_company_data(
     companies: List[Dict],
     search_service: SearchService,
-    scraper: WebScraper
+    scraper: WebScraper,
+    api_service: SGDataAPIService
 ) -> List[Dict]:
     """
     Enrich company data with contact information
     Scrapes multiple websites per company to maximize data extraction success
+    Falls back to APIs when scraping is blocked
 
     Args:
         companies: List of company dictionaries
         search_service: Search service instance
         scraper: Web scraper instance
+        api_service: Singapore data API service instance
 
     Returns:
         List of enriched company dictionaries
@@ -128,11 +134,18 @@ async def enrich_company_data(
                 # Scrape all websites and aggregate results
                 all_contacts = []
                 successful_websites = []
+                blocked_count = 0
 
                 for website_idx, website in enumerate(websites, 1):
                     logger.info(f"Scraping website {website_idx}/{len(websites)}: {website}")
 
                     contacts = await scraper.scrape_company_contacts(website)
+
+                    # Check if blocked by Cloudflare/bot protection
+                    if contacts.get('blocked'):
+                        blocked_count += 1
+                        logger.warning(f"✗ Website {website_idx} blocked by protection")
+                        continue
 
                     # Check if we got any useful data from this website (phone or email)
                     has_data = any([contacts.get('phone'), contacts.get('email')])
@@ -150,6 +163,23 @@ async def enrich_company_data(
                 # Aggregate results from all successful sources
                 aggregated = _aggregate_contacts(all_contacts)
 
+                # If all sites were blocked or no data found, try API fallback
+                all_blocked = blocked_count == len(websites)
+                no_data = not any([aggregated.get('phone'), aggregated.get('email')])
+
+                if all_blocked or no_data:
+                    logger.info(f"Scraping {'blocked' if all_blocked else 'returned no data'}, trying API fallback...")
+                    api_result = await api_service.search_company(company['name'], company['uen'])
+                    if api_result:
+                        logger.info(f"API fallback found data from: {api_result.get('source')}")
+                        # Merge API data
+                        if api_result.get('phone') and not aggregated.get('phone'):
+                            aggregated['phone'] = api_result['phone']
+                            if aggregated['phone'] not in aggregated.get('all_phones', []):
+                                aggregated.setdefault('all_phones', []).insert(0, aggregated['phone'])
+                        if api_result.get('email') and not aggregated.get('email'):
+                            aggregated['email'] = api_result['email']
+
                 logger.info(f"Aggregation complete - Final results: Phone: {aggregated.get('phone', 'N/A')}, Email: {aggregated.get('email', 'N/A')}, All phones: {aggregated.get('all_phones', [])}")
 
                 # Determine status and primary website
@@ -157,9 +187,15 @@ async def enrich_company_data(
                 primary_website = successful_websites[0] if successful_websites else websites[0]
 
                 if has_contact_info:
-                    status = f'Success (from {len(successful_websites)}/{len(websites)} websites)'
+                    if blocked_count > 0:
+                        status = f'Success (from {len(successful_websites)}/{len(websites)} websites, {blocked_count} blocked)'
+                    else:
+                        status = f'Success (from {len(successful_websites)}/{len(websites)} websites)'
                 else:
-                    status = f'Scraped {len(websites)} websites but no contact data found'
+                    if all_blocked:
+                        status = f'All {len(websites)} websites blocked by Cloudflare'
+                    else:
+                        status = f'Scraped {len(websites)} websites but no contact data found'
 
                 # Build company record with multiple phone columns
                 # Join all successful websites with newlines for Excel display
@@ -182,19 +218,35 @@ async def enrich_company_data(
 
                 enriched.append(company_record)
             else:
-                # No websites found
-                logger.warning(f"No websites found for {company['name']}")
-                enriched.append({
-                    'name': company['name'],
-                    'uen': company['uen'],
-                    'address': company['address'],
-                    'phone_1': '',
-                    'phone_2': '',
-                    'phone_3': '',
-                    'email': '',
-                    'website': '',
-                    'status': 'No websites found'
-                })
+                # No websites found - try API as primary source
+                logger.warning(f"No websites found for {company['name']}, trying API...")
+                api_result = await api_service.search_company(company['name'], company['uen'])
+
+                if api_result and (api_result.get('phone') or api_result.get('email')):
+                    logger.info(f"API found data for {company['name']}")
+                    enriched.append({
+                        'name': company['name'],
+                        'uen': company['uen'],
+                        'address': company['address'],
+                        'phone_1': api_result.get('phone', ''),
+                        'phone_2': '',
+                        'phone_3': '',
+                        'email': api_result.get('email', ''),
+                        'website': api_result.get('registry_url', ''),
+                        'status': f"Data from API ({api_result.get('source', 'unknown')})"
+                    })
+                else:
+                    enriched.append({
+                        'name': company['name'],
+                        'uen': company['uen'],
+                        'address': company['address'],
+                        'phone_1': '',
+                        'phone_2': '',
+                        'phone_3': '',
+                        'email': '',
+                        'website': '',
+                        'status': 'No websites found'
+                    })
 
         except Exception as e:
             # Error during enrichment
