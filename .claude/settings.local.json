@@ -10,7 +10,14 @@
       "Bash(git commit:*)",
       "Bash(python:*)",
       "Bash(cat:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "WebSearch",
+      "WebFetch(domain:www.zenrows.com)",
+      "WebFetch(domain:scrapeops.io)",
+      "WebFetch(domain:www.scrapingbee.com)",
+      "WebFetch(domain:stackoverflow.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": [],
     "ask": []

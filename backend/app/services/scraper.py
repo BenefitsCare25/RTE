@@ -1,21 +1,31 @@
-from playwright.async_api import async_playwright, Browser, Page, Playwright
+from playwright.async_api import async_playwright, Browser, Page, Playwright, BrowserContext
 from typing import Optional, Dict, List
 import asyncio
 import logging
 import random
 import os
+import httpx
 from app.utils.extractors import ContactExtractor
 
 logger = logging.getLogger(__name__)
 
-# Rotating user agents to appear more human-like
+# Try to import playwright_stealth, fall back to manual stealth if not available
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_AVAILABLE = True
+    logger.info("playwright-stealth package available")
+except ImportError:
+    STEALTH_AVAILABLE = False
+    logger.warning("playwright-stealth not installed, using manual stealth scripts")
+
+# Rotating user agents - latest Chrome versions
 USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
 ]
 
 # Viewport sizes to rotate
@@ -24,34 +34,58 @@ VIEWPORTS = [
     {'width': 1366, 'height': 768},
     {'width': 1536, 'height': 864},
     {'width': 1440, 'height': 900},
-    {'width': 1280, 'height': 720},
+    {'width': 1680, 'height': 1050},
+]
+
+# Cloudflare detection indicators
+CLOUDFLARE_INDICATORS = [
+    'verifying you are human',
+    'checking your browser',
+    'please wait while we verify',
+    'just a moment',
+    'enable javascript and cookies',
+    'ray id:',
+    'cloudflare',
+    'ddos protection',
+    'security check',
+    'access denied',
+    'attention required',
 ]
 
 
 class WebScraper:
-    """Service for scraping company websites to extract contact information"""
+    """
+    Advanced web scraper with Cloudflare bypass techniques:
+    1. playwright-stealth for anti-detection
+    2. Human-like behavior simulation (mouse, scroll, delays)
+    3. Session/cookie persistence for retry
+    4. FlareSolverr integration as fallback
+    5. Smart retry logic
+    """
 
     def __init__(self):
         self.browser: Optional[Browser] = None
         self.playwright: Optional[Playwright] = None
         self.extractor = ContactExtractor()
         self._request_count = 0
+        self._session_cookies: Dict[str, List] = {}  # Store cookies per domain
 
-        # Proxy configuration (optional - set via environment variables)
-        self.proxy_server = os.getenv("PROXY_SERVER")  # e.g., "http://proxy.example.com:8080"
+        # Proxy configuration
+        self.proxy_server = os.getenv("PROXY_SERVER")
         self.proxy_username = os.getenv("PROXY_USERNAME")
         self.proxy_password = os.getenv("PROXY_PASSWORD")
+
+        # FlareSolverr configuration (optional fallback)
+        self.flaresolverr_url = os.getenv("FLARESOLVERR_URL")  # e.g., "http://localhost:8191/v1"
 
     def _get_proxy_config(self) -> Optional[Dict]:
         """Get proxy configuration if available"""
         if not self.proxy_server:
             return None
-
         proxy_config = {"server": self.proxy_server}
         if self.proxy_username and self.proxy_password:
             proxy_config["username"] = self.proxy_username
             proxy_config["password"] = self.proxy_password
-
         return proxy_config
 
     async def initialize(self):
@@ -59,7 +93,7 @@ class WebScraper:
         if not self.browser:
             self.playwright = await async_playwright().start()
 
-            # Browser launch arguments for stealth
+            # Extensive browser launch arguments for stealth
             launch_args = [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -74,7 +108,7 @@ class WebScraper:
                 '--disable-component-update',
                 '--disable-default-apps',
                 '--disable-extensions',
-                '--disable-features=TranslateUI',
+                '--disable-features=TranslateUI,BlinkGenPropertyTrees',
                 '--disable-hang-monitor',
                 '--disable-ipc-flooding-protection',
                 '--disable-popup-blocking',
@@ -87,11 +121,10 @@ class WebScraper:
                 '--no-first-run',
                 '--password-store=basic',
                 '--use-mock-keychain',
-                '--export-tagged-pdf',
                 '--window-size=1920,1080',
+                '--start-maximized',
             ]
 
-            # Add proxy if configured
             proxy_config = self._get_proxy_config()
             launch_options = {
                 'headless': True,
@@ -112,21 +145,25 @@ class WebScraper:
             await self.playwright.stop()
             self.playwright = None
 
-    async def _apply_stealth_scripts(self, page: Page):
-        """Apply stealth JavaScript to avoid detection"""
-        # Override navigator.webdriver
+    async def _apply_manual_stealth(self, page: Page):
+        """Apply manual stealth scripts when playwright-stealth is not available"""
         await page.add_init_script("""
-            // Override webdriver property
+            // Comprehensive stealth script
+
+            // 1. Override webdriver property
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
 
-            // Override chrome property
+            // 2. Override chrome property
             window.chrome = {
-                runtime: {}
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {}
             };
 
-            // Override permissions
+            // 3. Override permissions query
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
                 parameters.name === 'notifications' ?
@@ -134,70 +171,229 @@ class WebScraper:
                     originalQuery(parameters)
             );
 
-            // Override plugins
+            // 4. Override plugins to look realistic
             Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
+                get: () => {
+                    const plugins = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+                    ];
+                    plugins.item = (i) => plugins[i];
+                    plugins.namedItem = (name) => plugins.find(p => p.name === name);
+                    plugins.refresh = () => {};
+                    return plugins;
+                }
             });
 
-            // Override languages
+            // 5. Override languages
             Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en', 'sg']
+                get: () => ['en-US', 'en']
             });
 
-            // Override platform
+            // 6. Override platform
             Object.defineProperty(navigator, 'platform', {
                 get: () => 'Win32'
             });
 
-            // Override hardware concurrency
+            // 7. Override hardware concurrency
             Object.defineProperty(navigator, 'hardwareConcurrency', {
                 get: () => 8
             });
 
-            // Override device memory
+            // 8. Override device memory
             Object.defineProperty(navigator, 'deviceMemory', {
                 get: () => 8
             });
+
+            // 9. Override WebGL vendor/renderer
+            const getParameterProxyHandler = {
+                apply: function(target, thisArg, argumentsList) {
+                    const param = argumentsList[0];
+                    const gl = thisArg;
+                    if (param === 37445) return 'Intel Inc.';  // UNMASKED_VENDOR_WEBGL
+                    if (param === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
+                    return Reflect.apply(target, thisArg, argumentsList);
+                }
+            };
+
+            try {
+                const canvas = document.createElement('canvas');
+                const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                if (gl) {
+                    gl.getParameter = new Proxy(gl.getParameter, getParameterProxyHandler);
+                }
+            } catch(e) {}
+
+            // 10. Remove automation-related properties
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+
+            // 11. Mock connection type
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 50,
+                    downlink: 10,
+                    saveData: false
+                })
+            });
         """)
 
-    async def _random_delay(self, min_ms: int = 500, max_ms: int = 2000):
-        """Add random delay to appear more human-like"""
-        delay = random.randint(min_ms, max_ms) / 1000
-        await asyncio.sleep(delay)
+    async def _simulate_human_behavior(self, page: Page):
+        """Simulate human-like behavior to bypass bot detection"""
+        try:
+            viewport = page.viewport_size or {'width': 1920, 'height': 1080}
 
-    async def scrape_company_contacts(self, website: str) -> Dict[str, any]:
+            # 1. Random mouse movements (5-8 movements)
+            for _ in range(random.randint(5, 8)):
+                x = random.randint(100, viewport['width'] - 100)
+                y = random.randint(100, viewport['height'] - 100)
+                # Move with variable steps to simulate human movement
+                await page.mouse.move(x, y, steps=random.randint(10, 30))
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+
+            # 2. Scroll down in chunks
+            for _ in range(random.randint(2, 4)):
+                scroll_amount = random.randint(100, 400)
+                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+
+            # 3. Small pause
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            # 4. Scroll back up a bit
+            await page.evaluate(f"window.scrollBy(0, -{random.randint(50, 200)})")
+            await asyncio.sleep(random.uniform(0.2, 0.5))
+
+            # 5. Random click on safe area (not on links)
+            safe_x = random.randint(50, 200)
+            safe_y = random.randint(50, 200)
+            await page.mouse.click(safe_x, safe_y)
+
+        except Exception as e:
+            logger.debug(f"Human behavior simulation error (non-critical): {e}")
+
+    async def _wait_for_cloudflare(self, page: Page, max_wait: int = 15) -> bool:
         """
-        Scrape company website for contact information with stealth features
-
-        Args:
-            website: Company website URL
-
-        Returns:
-            Dictionary with contact information
+        Wait for Cloudflare challenge to resolve with human behavior
+        Returns True if page is accessible, False if still blocked
         """
+        start_time = asyncio.get_event_loop().time()
+
+        while (asyncio.get_event_loop().time() - start_time) < max_wait:
+            try:
+                text_content = await page.inner_text('body')
+                text_lower = text_content.lower()
+
+                # Check if still showing Cloudflare challenge
+                is_blocked = any(indicator in text_lower for indicator in CLOUDFLARE_INDICATORS)
+
+                if not is_blocked or len(text_content) > 3000:
+                    # Page seems to have loaded real content
+                    return True
+
+                # Still blocked - simulate human behavior and wait
+                await self._simulate_human_behavior(page)
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            except Exception as e:
+                logger.debug(f"Error checking Cloudflare status: {e}")
+                await asyncio.sleep(1.0)
+
+        return False
+
+    async def _try_flaresolverr(self, website: str) -> Optional[Dict]:
+        """
+        Try to get page content via FlareSolverr as fallback
+        FlareSolverr is a proxy server that solves Cloudflare challenges
+        """
+        if not self.flaresolverr_url:
+            return None
+
+        try:
+            logger.info(f"Attempting FlareSolverr fallback for: {website}")
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    self.flaresolverr_url,
+                    json={
+                        "cmd": "request.get",
+                        "url": website,
+                        "maxTimeout": 60000
+                    }
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("status") == "ok":
+                        solution = data.get("solution", {})
+                        html_content = solution.get("response", "")
+
+                        if html_content:
+                            logger.info(f"FlareSolverr successfully retrieved content for: {website}")
+                            contacts = self.extractor.extract_all_contacts(html_content)
+                            return {
+                                'phone': contacts['phone'],
+                                'email': contacts['email'],
+                                'website': website,
+                                'all_phones': contacts.get('all_phones', []),
+                                'all_emails': contacts.get('all_emails', []),
+                                'blocked': False,
+                                'source': 'flaresolverr'
+                            }
+                    else:
+                        logger.warning(f"FlareSolverr failed: {data.get('message', 'Unknown error')}")
+
+        except Exception as e:
+            logger.error(f"FlareSolverr error: {e}")
+
+        return None
+
+    async def _get_domain(self, url: str) -> str:
+        """Extract domain from URL"""
+        from urllib.parse import urlparse
+        return urlparse(url).netloc
+
+    async def scrape_company_contacts(self, website: str, retry_count: int = 0) -> Dict[str, any]:
+        """
+        Scrape company website with advanced Cloudflare bypass techniques
+
+        Features:
+        1. playwright-stealth for anti-detection
+        2. Human-like behavior simulation
+        3. Cookie persistence for retry
+        4. FlareSolverr fallback
+        5. Smart retry logic
+        """
+        max_retries = 1  # One retry with different approach
+
         try:
             await self.initialize()
             self._request_count += 1
-            logger.info(f"Browser initialized, navigating to: {website} (request #{self._request_count})")
+            logger.info(f"Scraping: {website} (request #{self._request_count}, attempt {retry_count + 1})")
 
-            # Rotate user agent and viewport for each request
+            # Rotate user agent and viewport
             user_agent = random.choice(USER_AGENTS)
             viewport = random.choice(VIEWPORTS)
+            domain = await self._get_domain(website)
 
-            # Create a new browser context with stealth settings
+            # Create browser context with stealth settings
             context = await self.browser.new_context(
                 user_agent=user_agent,
                 viewport=viewport,
                 locale='en-SG',
                 timezone_id='Asia/Singapore',
-                geolocation={'latitude': 1.3521, 'longitude': 103.8198},  # Singapore
+                geolocation={'latitude': 1.3521, 'longitude': 103.8198},
                 permissions=['geolocation'],
                 extra_http_headers={
                     'Accept-Language': 'en-SG,en-US;q=0.9,en;q=0.8',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                     'Accept-Encoding': 'gzip, deflate, br',
-                    'Cache-Control': 'max-age=0',
-                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
                     'Sec-Ch-Ua-Mobile': '?0',
                     'Sec-Ch-Ua-Platform': '"Windows"',
                     'Sec-Fetch-Dest': 'document',
@@ -208,52 +404,69 @@ class WebScraper:
                 }
             )
 
+            # Restore cookies from previous session if available
+            if domain in self._session_cookies and self._session_cookies[domain]:
+                await context.add_cookies(self._session_cookies[domain])
+                logger.info(f"Restored {len(self._session_cookies[domain])} cookies for {domain}")
+
             page = await context.new_page()
 
-            # Apply stealth scripts before navigation
-            await self._apply_stealth_scripts(page)
+            # Apply stealth - use playwright-stealth if available, otherwise manual
+            if STEALTH_AVAILABLE:
+                await stealth_async(page)
+                logger.debug("Applied playwright-stealth")
+            else:
+                await self._apply_manual_stealth(page)
+                logger.debug("Applied manual stealth scripts")
 
-            # Disable timeout completely to prevent frontend disruption
-            # Pages will either load successfully or fail gracefully
-            page.set_default_timeout(0)  # 0 = no timeout
+            # No timeout to prevent frontend disruption
+            page.set_default_timeout(0)
 
-            # Add random delay between requests to appear more human
+            # Random delay between requests
             if self._request_count > 1:
-                await self._random_delay(1000, 3000)
+                await asyncio.sleep(random.uniform(1.5, 3.5))
 
-            # Navigate to website (no timeout - let it complete naturally)
+            # Navigate to website
             logger.info(f"Loading page: {website}")
-            await page.goto(website, wait_until='networkidle', timeout=0)
+            await page.goto(website, wait_until='domcontentloaded', timeout=0)
 
-            # Wait for Cloudflare challenge with random variation
-            logger.info("Waiting for Cloudflare challenge to resolve...")
-            await self._random_delay(4000, 6000)
+            # Simulate human behavior immediately
+            await self._simulate_human_behavior(page)
 
-            logger.info(f"Page loaded successfully: {website}")
+            # Wait for Cloudflare with active human simulation
+            page_accessible = await self._wait_for_cloudflare(page, max_wait=20)
 
-            # Extract contact information from main page
-            main_page_content = await page.content()
-            logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
-
-            # Log a snippet of the content for debugging
+            # Get page content
             text_content = await page.inner_text('body')
-            logger.info(f"Page text snippet (first 500 chars): {text_content[:500]}")
 
-            # Check if still blocked by Cloudflare
-            cloudflare_indicators = [
-                'verifying you are human',
-                'checking your browser',
-                'please wait while we verify',
-                'ray id:',
-                'cloudflare',
-                'ddos protection',
-            ]
+            # Check if blocked
             text_lower = text_content.lower()
-            is_blocked = any(indicator in text_lower for indicator in cloudflare_indicators)
+            is_blocked = any(indicator in text_lower for indicator in CLOUDFLARE_INDICATORS)
+            is_blocked = is_blocked and len(text_content) < 3000
 
-            if is_blocked and len(text_content) < 2000:  # Short page with CF indicators = blocked
-                logger.warning(f"Cloudflare/bot protection still blocking access to {website}")
+            if is_blocked:
+                logger.warning(f"Cloudflare blocking access to {website}")
+
+                # Save any cookies we got (might help on retry)
+                cookies = await context.cookies()
+                if cookies:
+                    self._session_cookies[domain] = cookies
+                    logger.info(f"Saved {len(cookies)} cookies for potential retry")
+
                 await context.close()
+
+                # Retry with FlareSolverr if available
+                if self.flaresolverr_url:
+                    flaresolverr_result = await self._try_flaresolverr(website)
+                    if flaresolverr_result:
+                        return flaresolverr_result
+
+                # One retry with saved cookies
+                if retry_count < max_retries:
+                    logger.info(f"Retrying {website} with saved cookies...")
+                    await asyncio.sleep(random.uniform(3, 5))
+                    return await self.scrape_company_contacts(website, retry_count + 1)
+
                 return {
                     'phone': None,
                     'email': None,
@@ -263,27 +476,36 @@ class WebScraper:
                     'blocked': True
                 }
 
-            contacts = self.extractor.extract_all_contacts(main_page_content)
-            logger.info(f"Extraction results - Phones found: {contacts.get('all_phones', [])}, Emails found: {contacts.get('all_emails', [])}")
+            # Success! Save cookies for future use
+            cookies = await context.cookies()
+            if cookies:
+                self._session_cookies[domain] = cookies
 
-            # If contact info not found, try to find contact page
+            # Extract contacts from main page
+            main_page_content = await page.content()
+            logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
+
+            contacts = self.extractor.extract_all_contacts(main_page_content)
+            logger.info(f"Extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+
+            # Try contact page if no data found
             if not (contacts['phone'] or contacts['email']):
-                logger.info("No contact info found on main page, searching for contact page...")
+                logger.info("No contact info on main page, searching for contact page...")
                 contact_page_url = await self._find_contact_page(page, website)
 
                 if contact_page_url:
                     logger.info(f"Found contact page: {contact_page_url}")
-                    await self._random_delay(1000, 2000)  # Random delay before navigation
+                    await asyncio.sleep(random.uniform(1, 2))
+                    await self._simulate_human_behavior(page)
                     await page.goto(contact_page_url, wait_until='domcontentloaded')
+                    await self._simulate_human_behavior(page)
                     contact_page_content = await page.content()
                     contacts = self.extractor.extract_all_contacts(contact_page_content)
-                    logger.info(f"Contact page extraction - Phones: {contacts.get('all_phones', [])}, Emails: {contacts.get('all_emails', [])}")
-                else:
-                    logger.info("No contact page found")
+                    logger.info(f"Contact page: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
 
             await context.close()
 
-            final_result = {
+            return {
                 'phone': contacts['phone'],
                 'email': contacts['email'],
                 'website': website,
@@ -291,11 +513,16 @@ class WebScraper:
                 'all_emails': contacts.get('all_emails', []),
                 'blocked': False
             }
-            logger.info(f"Final scraping result for {website}: {final_result}")
-            return final_result
 
         except Exception as e:
             logger.error(f"Scraping error for {website}: {str(e)}", exc_info=True)
+
+            # Try FlareSolverr as last resort on error
+            if self.flaresolverr_url and retry_count == 0:
+                flaresolverr_result = await self._try_flaresolverr(website)
+                if flaresolverr_result:
+                    return flaresolverr_result
+
             return {
                 'phone': None,
                 'email': None,
@@ -306,27 +533,19 @@ class WebScraper:
             }
 
     async def _find_contact_page(self, page: Page, base_url: str) -> Optional[str]:
-        """
-        Find contact page URL
-
-        Args:
-            page: Playwright page object
-            base_url: Base website URL
-
-        Returns:
-            Contact page URL if found
-        """
+        """Find contact page URL"""
         try:
-            # Common contact page patterns
             contact_selectors = [
                 'a[href*="contact"]',
                 'a[href*="Contact"]',
                 'a[href*="CONTACT"]',
                 'a[href*="get-in-touch"]',
                 'a[href*="reach-us"]',
+                'a[href*="enquir"]',
                 'a:has-text("Contact")',
                 'a:has-text("Contact Us")',
                 'a:has-text("Get in Touch")',
+                'a:has-text("Enquiry")',
             ]
 
             for selector in contact_selectors:
@@ -335,12 +554,11 @@ class WebScraper:
                     if element:
                         href = await element.get_attribute('href')
                         if href:
-                            # Handle relative URLs
                             if href.startswith('/'):
                                 return base_url.rstrip('/') + href
                             elif href.startswith('http'):
                                 return href
-                            else:
+                            elif not href.startswith('#') and not href.startswith('mailto:'):
                                 return base_url.rstrip('/') + '/' + href
                 except:
                     continue
@@ -353,21 +571,11 @@ class WebScraper:
     async def scrape_multiple_companies(
         self,
         websites: List[str],
-        batch_size: int = 5
+        batch_size: int = 3
     ) -> List[Dict[str, any]]:
-        """
-        Scrape multiple company websites with batching
-
-        Args:
-            websites: List of website URLs
-            batch_size: Number of concurrent scraping tasks
-
-        Returns:
-            List of contact information dictionaries
-        """
+        """Scrape multiple company websites with batching"""
         results = []
 
-        # Process in batches to avoid overwhelming resources
         for i in range(0, len(websites), batch_size):
             batch = websites[i:i + batch_size]
             batch_results = await asyncio.gather(
@@ -382,7 +590,8 @@ class WebScraper:
                         'email': None,
                         'website': None,
                         'all_phones': [],
-                        'all_emails': []
+                        'all_emails': [],
+                        'blocked': False
                     })
                 else:
                     results.append(result)

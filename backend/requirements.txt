@@ -10,6 +10,7 @@ openpyxl==3.1.5
 # Web scraping
 playwright==1.41.0
 beautifulsoup4==4.12.3
+playwright-stealth==1.0.6
 
 # HTTP client
 httpx==0.26.0
@@ -17,8 +18,8 @@ httpx==0.26.0
 # Environment variables
 python-dotenv==1.0.0
 
-# Note: Stealth features are implemented inline in scraper.py
-# Optional proxy support via environment variables:
+# Optional environment variables for enhanced scraping:
 # - PROXY_SERVER: e.g., "http://proxy.example.com:8080"
 # - PROXY_USERNAME: proxy authentication username
 # - PROXY_PASSWORD: proxy authentication password
+# - FLARESOLVERR_URL: e.g., "http://localhost:8191/v1" (optional FlareSolverr instance)
