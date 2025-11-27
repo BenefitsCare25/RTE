@@ -1,18 +1,16 @@
-# Use Python 3.12.8 base image
-FROM python:3.12.8-slim
+# Use Microsoft's pre-built Playwright image (includes Chromium + all dependencies)
+# This saves ~4 minutes of build time by skipping playwright install-deps
+FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements file
+# Copy requirements file first (for better layer caching)
 COPY requirements.txt .
 
 # Install Python dependencies
+# Note: playwright package is still needed for the Python API
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright system dependencies and browsers
-RUN playwright install-deps chromium && \
-    playwright install chromium
 
 # Copy application code
 COPY . .

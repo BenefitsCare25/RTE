@@ -167,13 +167,13 @@ class SearchService:
         logger.info(f"Total results returned: {len(organic_results)}")
         logger.info(f"{'='*80}")
 
-        # Skip common non-company sites and directory sites
+        # Only exclude social media and sites that don't contain contact info
+        # Note: SG business directories (sgpbusiness, companies.sg, etc.) are ALLOWED
+        # because they often contain phone/email data for companies without websites
         excluded_domains = [
             'facebook.com', 'linkedin.com', 'instagram.com',
             'twitter.com', 'youtube.com', 'wikipedia.org',
-            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com',
-            'sgpbusiness.com', 'companies.sg', 'recordowl.com',
-            'ltddir.com', 'sgpgrid.com', 'tellme.sg'
+            'bizfile.gov.sg',  # Official registry, no contact info
         ]
 
         # Display all results first
@@ -258,13 +258,13 @@ class SearchService:
         """
         web_pages = data.get("webPages", {}).get("value", [])
 
-        # Skip common non-company sites and directory sites
+        # Only exclude social media and sites that don't contain contact info
+        # Note: SG business directories (sgpbusiness, companies.sg, etc.) are ALLOWED
+        # because they often contain phone/email data for companies without websites
         excluded_domains = [
             'facebook.com', 'linkedin.com', 'instagram.com',
             'twitter.com', 'youtube.com', 'wikipedia.org',
-            'bizfile.gov.sg', 'dnb.com', 'bloomberg.com',
-            'sgpbusiness.com', 'companies.sg', 'recordowl.com',
-            'ltddir.com', 'sgpgrid.com', 'tellme.sg'
+            'bizfile.gov.sg',  # Official registry, no contact info
         ]
 
         logger.info("Collecting websites from Bing results...")
