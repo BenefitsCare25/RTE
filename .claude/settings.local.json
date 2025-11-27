@@ -17,7 +17,9 @@
       "WebFetch(domain:www.scrapingbee.com)",
       "WebFetch(domain:stackoverflow.com)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(dir:*)",
+      "WebFetch(domain:serpapi.com)"
     ],
     "deny": [],
     "ask": []

@@ -75,31 +75,45 @@ function App() {
       file,
       // Progress callback
       async (event) => {
+        console.log('[App] Progress event received:', event.type, event);
         try {
           if (event.type === 'session_start') {
             currentSessionRef.current = event.session_id;
 
-            // Create new recovery session
-            await recoveryStorage.saveSession({
-              sessionId: event.session_id,
-              originalFilename: event.original_filename,
-              totalCompanies: event.total_companies,
-              processedCompanies: [],
-              startedAt: Date.now(),
-              lastUpdatedAt: Date.now(),
-              status: 'in_progress',
-            });
-
+            // Update UI FIRST before async storage operations
+            console.log('[App] Setting progress for session_start:', event.total_companies);
             setProgress({ current: 0, total: event.total_companies, company: '' });
-          } else if (event.type === 'company_processed') {
-            // Store processed company to IndexedDB
-            await recoveryStorage.addProcessedCompany(currentSessionRef.current!, event.data);
 
+            // Then try to save to IndexedDB (non-blocking for UI)
+            try {
+              await recoveryStorage.saveSession({
+                sessionId: event.session_id,
+                originalFilename: event.original_filename,
+                totalCompanies: event.total_companies,
+                processedCompanies: [],
+                startedAt: Date.now(),
+                lastUpdatedAt: Date.now(),
+                status: 'in_progress',
+              });
+              console.log('[App] Session saved to IndexedDB');
+            } catch (storageErr) {
+              console.warn('[App] Failed to save session to IndexedDB:', storageErr);
+            }
+          } else if (event.type === 'company_processed') {
+            // Update UI FIRST
+            console.log('[App] Setting progress for company:', event.data.name);
             setProgress({
               current: event.index + 1,
               total: event.total,
               company: event.data.name,
             });
+
+            // Then try to store to IndexedDB (non-blocking for UI)
+            try {
+              await recoveryStorage.addProcessedCompany(currentSessionRef.current!, event.data);
+            } catch (storageErr) {
+              console.warn('[App] Failed to save company to IndexedDB:', storageErr);
+            }
           } else if (event.type === 'complete') {
             // Get all processed data and generate Excel
             const session = await recoveryStorage.getSession(currentSessionRef.current!);
