@@ -6,9 +6,11 @@ interface ProcessingProps {
   currentIndex: number;
   totalCompanies: number;
   currentCompany?: string;
+  successCount: number;
+  failedCount: number;
 }
 
-const Processing = ({ currentIndex, totalCompanies, currentCompany }: ProcessingProps) => {
+const Processing = ({ currentIndex, totalCompanies, currentCompany, successCount, failedCount }: ProcessingProps) => {
   const progress = totalCompanies > 0 ? Math.round((currentIndex / totalCompanies) * 100) : 0;
 
   return (
@@ -27,6 +29,18 @@ const Processing = ({ currentIndex, totalCompanies, currentCompany }: Processing
                 Processing company {currentIndex} of {totalCompanies}
               </p>
 
+              {/* Success/Failed counters */}
+              <div className="flex justify-center gap-8 mb-4">
+                <div className="text-center">
+                  <span className="text-2xl font-bold text-green-600">{successCount}</span>
+                  <p className="text-xs text-gray-500">Successful</p>
+                </div>
+                <div className="text-center">
+                  <span className="text-2xl font-bold text-red-500">{failedCount}</span>
+                  <p className="text-xs text-gray-500">Failed</p>
+                </div>
+              </div>
+
               {/* Progress bar */}
               <div className="w-full bg-gray-200 rounded-full h-2.5 mb-4">
                 <div
@@ -35,8 +49,13 @@ const Processing = ({ currentIndex, totalCompanies, currentCompany }: Processing
                 ></div>
               </div>
 
-              {/* Percentage */}
-              <p className="text-sm text-gray-500 mb-2">{progress}% complete</p>
+              {/* Percentage and next backup */}
+              <div className="flex justify-between text-sm text-gray-500 mb-2">
+                <span>{progress}% complete</span>
+                <span className="text-gray-400">
+                  Next backup: {currentIndex > 0 ? 10 - (currentIndex % 10) : 10} companies
+                </span>
+              </div>
 
               {/* Current company name */}
               {currentCompany && (

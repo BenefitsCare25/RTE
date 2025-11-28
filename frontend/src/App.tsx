@@ -10,13 +10,23 @@ interface ProgressState {
   current: number;
   total: number;
   company: string;
+  successCount: number;
+  failedCount: number;
+  lastDownloadAt: number;
 }
 
 function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recoverySession, setRecoverySession] = useState<RecoverySession | null>(null);
-  const [progress, setProgress] = useState<ProgressState>({ current: 0, total: 0, company: '' });
+  const [progress, setProgress] = useState<ProgressState>({
+    current: 0,
+    total: 0,
+    company: '',
+    successCount: 0,
+    failedCount: 0,
+    lastDownloadAt: 0
+  });
 
   // Track current session ID for disruption handling
   const currentSessionRef = useRef<string | null>(null);
@@ -68,7 +78,7 @@ function App() {
   const handleFileUpload = async (file: File) => {
     setIsProcessing(true);
     setError(null);
-    setProgress({ current: 0, total: 0, company: '' });
+    setProgress({ current: 0, total: 0, company: '', successCount: 0, failedCount: 0, lastDownloadAt: 0 });
     originalFilenameRef.current = file.name;
 
     await enrichCompaniesWithProgress(
@@ -82,7 +92,7 @@ function App() {
 
             // Update UI FIRST before async storage operations
             console.log('[App] Setting progress for session_start:', event.total_companies);
-            setProgress({ current: 0, total: event.total_companies, company: '' });
+            setProgress({ current: 0, total: event.total_companies, company: '', successCount: 0, failedCount: 0, lastDownloadAt: 0 });
 
             // Then try to save to IndexedDB (non-blocking for UI)
             try {
@@ -100,12 +110,27 @@ function App() {
               console.warn('[App] Failed to save session to IndexedDB:', storageErr);
             }
           } else if (event.type === 'company_processed') {
+            // Determine success/failure based on status field
+            // Success = starts with "Success", Failure = "No contact data found" or "Error"
+            const status = event.data.status?.toLowerCase() || '';
+            const isSuccess = status.startsWith('success');
+
             // Update UI FIRST
-            console.log('[App] Setting progress for company:', event.data.name);
-            setProgress({
-              current: event.index + 1,
-              total: event.total,
-              company: event.data.name,
+            console.log('[App] Setting progress for company:', event.data.name, 'success:', isSuccess);
+            const newCurrent = event.index + 1;
+
+            setProgress(prev => {
+              const newSuccessCount = isSuccess ? prev.successCount + 1 : prev.successCount;
+              const newFailedCount = isSuccess ? prev.failedCount : prev.failedCount + 1;
+
+              return {
+                current: newCurrent,
+                total: event.total,
+                company: event.data.name,
+                successCount: newSuccessCount,
+                failedCount: newFailedCount,
+                lastDownloadAt: prev.lastDownloadAt,
+              };
             });
 
             // Then try to store to IndexedDB (non-blocking for UI)
@@ -113,6 +138,21 @@ function App() {
               await recoveryStorage.addProcessedCompany(currentSessionRef.current!, event.data);
             } catch (storageErr) {
               console.warn('[App] Failed to save company to IndexedDB:', storageErr);
+            }
+
+            // Auto-download every 10 companies (cumulative)
+            if (newCurrent % 10 === 0 && newCurrent > 0) {
+              try {
+                const session = await recoveryStorage.getSession(currentSessionRef.current!);
+                if (session && session.processedCompanies.length > 0) {
+                  console.log(`[App] Auto-downloading backup at ${newCurrent} companies`);
+                  const blob = generateExcelBlob(session.processedCompanies, session.originalFilename);
+                  downloadBlob(blob, `backup_${newCurrent}_${session.originalFilename}`);
+                  setProgress(prev => ({ ...prev, lastDownloadAt: newCurrent }));
+                }
+              } catch (downloadErr) {
+                console.warn('[App] Failed to auto-download backup:', downloadErr);
+              }
             }
           } else if (event.type === 'complete') {
             // Get all processed data and generate Excel
@@ -241,6 +281,8 @@ function App() {
             currentIndex={progress.current}
             totalCompanies={progress.total}
             currentCompany={progress.company}
+            successCount={progress.successCount}
+            failedCount={progress.failedCount}
           />
         )}
 
