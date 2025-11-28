@@ -34,6 +34,11 @@ DIRECTORY_DOMAINS = [
     'recordowl.com',
     'sg.ltddir.com',
     'ltddir.com',
+    # Singapore company directories (added)
+    'sgpgrid.com',
+    'scam.sg',
+    'companieshouse.sg',
+    'sgx.com',  # Stock exchange - no contact info
     # International directories
     'dnb.com',
     'crunchbase.com',
@@ -41,6 +46,14 @@ DIRECTORY_DOMAINS = [
     'bloomberg.com',
     'yelp.com',
     'yellowpages.com',
+    # Trade/business directories
+    'volza.com',
+    'inriskable.com',
+    'importgenius.com',
+    'panjiva.com',
+    # Generic contact services
+    'contact.page',
+    'contactout.com',
     # Company registries (no contact info)
     'bizfile.gov.sg',
     'acra.gov.sg',
@@ -48,6 +61,18 @@ DIRECTORY_DOMAINS = [
     'glassdoor.com',
     'indeed.com',
     'jobstreet.com',
+    # Document/content sites (NOT company websites)
+    'scribd.com',
+    'academia.edu',
+    'researchgate.net',
+    'dokumen.pub',
+    'issuu.com',
+    # Archive/library/government (no company contacts)
+    'archive.org',
+    'nlb.gov.sg',
+    'eresources.nlb.gov.sg',
+    'fraser.stlouisfed.org',
+    'evols.library.manoa.hawaii.edu',
 ]
 
 # Sites that typically work well without heavy protection
@@ -68,6 +93,19 @@ EXCLUDED_DOMAINS = [
     *DIRECTORY_DOMAINS,
 ]
 
+# URL patterns to exclude (files, downloads, archives - not scrapable HTML)
+EXCLUDED_URL_PATTERNS = [
+    r'\.pdf$',
+    r'\.doc[x]?$',
+    r'\.xls[x]?$',
+    r'\.ppt[x]?$',
+    r'/bitstream/',
+    r'/download/',
+    r'/newspapers/',
+    r'/digitised/',
+    r'/document/',
+]
+
 
 class SearchService:
     """Service for searching company information using search engines"""
@@ -75,6 +113,116 @@ class SearchService:
     def __init__(self):
         self.serpapi_key = os.getenv("SERPAPI_KEY")
         self.bing_key = os.getenv("BING_SEARCH_KEY")
+
+    def _extract_company_keywords(self, company_name: str) -> List[str]:
+        """
+        Extract searchable keywords from company name.
+
+        Removes company suffixes (PTE LTD, SDN BHD, etc.) and returns
+        significant words (3+ chars) that can be used to match against
+        domain names and page titles.
+
+        Examples:
+            "ASTRABON (S) PTE LTD" → ["astrabon"]
+            "A.T.E. MASKATI PRIVATE LIMITED" → ["ate", "maskati"]
+            "AMOY CANNING CORPORATION" → ["amoy", "canning"]
+        """
+        # Normalize: uppercase, remove dots early (for A.T.E. → ATE)
+        clean = company_name.upper()
+        clean = re.sub(r'\.', ' ', clean)  # Replace dots with spaces
+        clean = re.sub(r'\s+', ' ', clean).strip()
+
+        # Remove company suffixes - apply multiple times to handle nested patterns
+        suffix_patterns = [
+            r'\s*\(\s*S\s*\)\s*',           # (S) with optional spaces
+            r'\s*\(\s*SINGAPORE\s*\)\s*',   # (SINGAPORE)
+            r'\s+PRIVATE\s+LIMITED$',
+            r'\s+PTE\s+LTD$',
+            r'\s+SDN\s+BHD$',
+            r'\s+LIMITED$',
+            r'\s+LTD$',
+            r'\s+PTE$',
+            r'\s+BHD$',
+            r'\s+CORPORATION$',
+            r'\s+CORP$',
+            r'\s+HOLDINGS$',
+            r'\s+ENTERPRISES$',
+            r'\s+SERVICES$',
+            r'\s+TRADING$',
+            r'\s+INTERNATIONAL$',
+            r'\s+INC$',
+            r'\s+LLC$',
+            r'\s+LLP$',
+            r'\s+CO$',
+        ]
+
+        # Apply suffix removal multiple times until no more changes
+        # Replace with space (not empty string) to avoid joining adjacent words
+        # e.g., "ASTRABON (S) PTE LTD" should become "ASTRABON PTE LTD", not "ASTRABONPTE LTD"
+        for _ in range(3):  # Max 3 iterations
+            prev = clean
+            for pattern in suffix_patterns:
+                clean = re.sub(pattern, ' ', clean, flags=re.IGNORECASE)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            if clean == prev:
+                break
+
+        # Split into words, keep only significant ones (3+ chars)
+        words = re.findall(r'\b[A-Z]{3,}\b', clean)
+
+        # Remove common words that don't help identify the company
+        common = {'THE', 'AND', 'FOR', 'PTE', 'LTD', 'SDN', 'BHD', 'INC', 'LLC',
+                  'COMPANY', 'GROUP', 'ASIA', 'PACIFIC', 'SINGAPORE', 'GLOBAL',
+                  'CORPORATION', 'CORP', 'HOLDINGS', 'ENTERPRISES', 'SERVICES',
+                  'TRADING', 'INTERNATIONAL', 'PRIVATE', 'LIMITED'}
+        keywords = [w.lower() for w in words if w not in common]
+
+        return keywords
+
+    def _is_relevant_to_company(self, url: str, title: str, company_name: str) -> bool:
+        """
+        Check if URL/title contains company name keywords.
+
+        Returns True if ANY keyword from the company name appears in
+        the domain or page title. This prevents accepting random
+        unrelated sites like scribd.com or academia.edu.
+
+        Args:
+            url: The website URL
+            title: The page title from search results
+            company_name: The company being searched for
+
+        Returns:
+            True if relevant, False if no company keywords found
+        """
+        keywords = self._extract_company_keywords(company_name)
+
+        # If no keywords extracted (very short name), allow all
+        if not keywords:
+            logger.info(f"  No keywords extracted from '{company_name}', allowing URL")
+            return True
+
+        domain = urlparse(url).netloc.lower()
+        # Remove www. and common TLDs for better matching
+        domain_clean = domain.replace('www.', '').split('.')[0]
+        title_lower = title.lower()
+
+        # Check if ANY keyword appears in domain or title
+        for keyword in keywords:
+            if keyword in domain_clean or keyword in title_lower:
+                logger.debug(f"  Keyword '{keyword}' found in domain/title")
+                return True
+
+        logger.info(f"  No keywords {keywords} found in domain '{domain_clean}' or title")
+        return False
+
+    def _is_excluded_url_pattern(self, url: str) -> bool:
+        """Check if URL matches excluded patterns (PDFs, downloads, etc.)"""
+        url_lower = url.lower()
+        for pattern in EXCLUDED_URL_PATTERNS:
+            if re.search(pattern, url_lower):
+                return True
+        return False
 
     async def search_company_websites(
         self,
@@ -365,8 +513,12 @@ class SearchService:
         logger.info(f"{'='*80}")
         logger.info(f"Web Search Results for: {company_name}")
         logger.info(f"Total results returned: {len(organic_results)}")
-        logger.info(f"FILTER: Only accepting actual company websites, excluding all directories")
+        logger.info(f"FILTER: Only accepting company websites with keyword match")
         logger.info(f"{'='*80}")
+
+        # Extract keywords once for this company
+        keywords = self._extract_company_keywords(company_name)
+        logger.info(f"Company keywords for matching: {keywords}")
 
         # Track all discovered URLs and company websites separately
         all_discovered = []
@@ -405,7 +557,19 @@ class SearchService:
                 excluded_count += 1
                 continue
 
-            # Check for company name match
+            # Check for URL pattern exclusions (PDFs, downloads, etc.)
+            if self._is_excluded_url_pattern(url):
+                logger.info(f"  Status: EXCLUDED (file/archive URL pattern)")
+                excluded_count += 1
+                continue
+
+            # Check company name relevance - CRITICAL: prevents accepting random unrelated sites
+            if not self._is_relevant_to_company(url, title, company_name):
+                logger.info(f"  Status: EXCLUDED (no company keyword in domain/title)")
+                excluded_count += 1
+                continue
+
+            # Check for company name match (full name match)
             title_match = company_name.lower() in title.lower()
             url_match = company_name.lower() in url.lower()
             has_name_match = title_match or url_match
@@ -420,7 +584,7 @@ class SearchService:
                 match_info = f", name match in {', '.join(match_type)}"
 
             logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
-            logger.info(f"  Status: ACCEPTED - Company website")
+            logger.info(f"  Status: ACCEPTED - Company website (keyword match)")
 
             # Only company websites make it here
             if has_name_match:
@@ -433,7 +597,7 @@ class SearchService:
         logger.info("Smart Filtering Results:")
         logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
         logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
-        logger.info(f"  - Excluded (directories/social): {excluded_count}")
+        logger.info(f"  - Excluded (directories/social/irrelevant): {excluded_count}")
         logger.info(f"  - Total discovered URLs: {len(all_discovered)}")
         logger.info(f"{'-'*80}")
 
@@ -482,8 +646,12 @@ class SearchService:
         logger.info(f"{'='*80}")
         logger.info(f"Bing Search Results for: {company_name}")
         logger.info(f"Total results returned: {len(web_pages)}")
-        logger.info(f"FILTER: Only accepting actual company websites, excluding all directories")
+        logger.info(f"FILTER: Only accepting company websites with keyword match")
         logger.info(f"{'='*80}")
+
+        # Extract keywords once for this company
+        keywords = self._extract_company_keywords(company_name)
+        logger.info(f"Company keywords for matching: {keywords}")
 
         # Track all discovered URLs and company websites separately
         all_discovered = []
@@ -522,7 +690,19 @@ class SearchService:
                 excluded_count += 1
                 continue
 
-            # Check for company name match
+            # Check for URL pattern exclusions (PDFs, downloads, etc.)
+            if self._is_excluded_url_pattern(url):
+                logger.info(f"  Status: EXCLUDED (file/archive URL pattern)")
+                excluded_count += 1
+                continue
+
+            # Check company name relevance - CRITICAL: prevents accepting random unrelated sites
+            if not self._is_relevant_to_company(url, title, company_name):
+                logger.info(f"  Status: EXCLUDED (no company keyword in domain/title)")
+                excluded_count += 1
+                continue
+
+            # Check for company name match (full name match)
             title_match = company_name.lower() in title.lower()
             url_match = company_name.lower() in url.lower()
             has_name_match = title_match or url_match
@@ -537,7 +717,7 @@ class SearchService:
                 match_info = f", name match in {', '.join(match_type)}"
 
             logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
-            logger.info(f"  Status: ACCEPTED - Company website")
+            logger.info(f"  Status: ACCEPTED - Company website (keyword match)")
 
             # Only company websites make it here
             if has_name_match:
@@ -550,7 +730,7 @@ class SearchService:
         logger.info("Smart Filtering Results:")
         logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
         logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
-        logger.info(f"  - Excluded (directories/social): {excluded_count}")
+        logger.info(f"  - Excluded (directories/social/irrelevant): {excluded_count}")
         logger.info(f"  - Total discovered URLs: {len(all_discovered)}")
         logger.info(f"{'-'*80}")
 

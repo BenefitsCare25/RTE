@@ -14,6 +14,9 @@ from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of websites to scrape per company (to save time and API calls)
+MAX_WEBSITES_TO_SCRAPE = 2
+
 router = APIRouter()
 excel_handler = ExcelHandler()
 
@@ -575,8 +578,14 @@ async def enrich_single_company(
 
         logger.info(f"Web search: {len(websites)} company websites, {len(all_discovered_urls)} total discovered")
 
-        if websites:
-            logger.info(f"Found {len(websites)} company websites to scrape")
+        if not websites:
+            # No relevant company websites found - mark status and move on quickly
+            logger.info(f"No relevant company website found for {company['name']}, moving on")
+            status_parts.append('no company website found')
+        elif websites:
+            # Limit websites to scrape to save time and API calls
+            websites_to_scrape = websites[:MAX_WEBSITES_TO_SCRAPE]
+            logger.info(f"Found {len(websites)} company websites, scraping top {len(websites_to_scrape)}")
 
             # Scrape websites until we have phone + email
             all_contacts = []
@@ -585,11 +594,12 @@ async def enrich_single_company(
             have_phone = bool(phone)
             have_email = bool(email)
 
-            for website_idx, site_url in enumerate(websites, 1):
+            for website_idx, site_url in enumerate(websites_to_scrape, 1):
                 if have_phone and have_email:
+                    logger.info("Already have phone + email, stopping scrape")
                     break
 
-                logger.info(f"Scraping website {website_idx}/{len(websites)}: {site_url}")
+                logger.info(f"Scraping website {website_idx}/{len(websites_to_scrape)}: {site_url}")
                 contacts = await scraper.scrape_company_contacts(site_url)
 
                 if contacts.get('blocked'):
