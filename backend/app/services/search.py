@@ -519,6 +519,10 @@ class SearchService:
         Extract website URLs from SerpAPI results - ONLY company websites for scraping.
         Also returns ALL discovered URLs for reference.
 
+        Uses TWO-PASS approach:
+        1. First pass: Find company websites with keyword match (establish trusted domains)
+        2. Second pass: Accept contact/about pages from trusted domains
+
         Args:
             data: SerpAPI response data
             company_name: Company name for validation
@@ -533,7 +537,7 @@ class SearchService:
         logger.info(f"{'='*80}")
         logger.info(f"Web Search Results for: {company_name}")
         logger.info(f"Total results returned: {len(organic_results)}")
-        logger.info(f"FILTER: Only accepting company websites with keyword match")
+        logger.info(f"FILTER: Two-pass - keyword match then same-domain contact pages")
         logger.info(f"{'='*80}")
 
         # Extract keywords once for this company
@@ -542,12 +546,20 @@ class SearchService:
 
         # Track all discovered URLs and company websites separately
         all_discovered = []
+        trusted_domains = set()  # Domains confirmed to be the company's website
         categorized = {
             'company_with_match': [],    # Priority 1: Own website + name match
             'company_no_match': [],      # Priority 2: Own website, no name match
+            'contact_pages': [],         # Priority 3: Contact/about pages from trusted domain
         }
+        # Store pending URLs that might be contact pages for second pass
+        pending_same_domain = []
         excluded_count = 0
 
+        # Contact page indicators
+        contact_indicators = ['contact', 'about', 'reach-us', 'get-in-touch', 'enquir']
+
+        # FIRST PASS: Find company websites with keyword match
         for idx, result in enumerate(organic_results, 1):
             url = result.get("link", "")
             title = result.get("title", "")
@@ -557,14 +569,15 @@ class SearchService:
             logger.info(f"  URL:   {url}")
 
             cleaned_url = self._clean_url(url)
+            domain = urlparse(url).netloc.lower()
 
             # Add ALL URLs to all_discovered (for reference column)
             if cleaned_url and cleaned_url not in all_discovered:
                 all_discovered.append(cleaned_url)
 
             # Check if excluded (social media, etc.)
-            if any(domain in url for domain in EXCLUDED_DOMAINS):
-                excluded_domain = next(domain for domain in EXCLUDED_DOMAINS if domain in url)
+            if any(excl_domain in url for excl_domain in EXCLUDED_DOMAINS):
+                excluded_domain = next(excl_domain for excl_domain in EXCLUDED_DOMAINS if excl_domain in url)
                 logger.info(f"  Status: EXCLUDED (domain: {excluded_domain})")
                 excluded_count += 1
                 continue
@@ -583,46 +596,89 @@ class SearchService:
                 excluded_count += 1
                 continue
 
-            # Check company name relevance - CRITICAL: prevents accepting random unrelated sites
-            if not self._is_relevant_to_company(url, title, company_name):
-                logger.info(f"  Status: EXCLUDED (no company keyword in domain/title)")
-                excluded_count += 1
-                continue
+            # Check company name relevance
+            is_relevant = self._is_relevant_to_company(url, title, company_name)
 
-            # Check for company name match (full name match)
-            title_match = company_name.lower() in title.lower()
-            url_match = company_name.lower() in url.lower()
-            has_name_match = title_match or url_match
+            if is_relevant:
+                # This is a confirmed company website - add domain to trusted list
+                trusted_domains.add(domain)
 
-            match_info = ""
-            if has_name_match:
-                match_type = []
-                if title_match:
-                    match_type.append("title")
-                if url_match:
-                    match_type.append("URL")
-                match_info = f", name match in {', '.join(match_type)}"
+                # Check for company name match (full name match)
+                title_match = company_name.lower() in title.lower()
+                url_match = company_name.lower() in url.lower()
+                has_name_match = title_match or url_match
 
-            logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
-            logger.info(f"  Status: ACCEPTED - Company website (keyword match)")
+                match_info = ""
+                if has_name_match:
+                    match_type = []
+                    if title_match:
+                        match_type.append("title")
+                    if url_match:
+                        match_type.append("URL")
+                    match_info = f", name match in {', '.join(match_type)}"
 
-            # Only company websites make it here
-            if has_name_match:
-                categorized['company_with_match'].append(cleaned_url)
+                logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
+                logger.info(f"  Status: ACCEPTED - Company website (keyword match)")
+                logger.info(f"  Trusted domain added: {domain}")
+
+                if has_name_match:
+                    categorized['company_with_match'].append(cleaned_url)
+                else:
+                    categorized['company_no_match'].append(cleaned_url)
             else:
-                categorized['company_no_match'].append(cleaned_url)
+                # Not relevant by keyword, but might be a contact page from same domain
+                # Check if it's a contact-type page
+                url_lower = url.lower()
+                title_lower = title.lower()
+                is_contact_page = any(ind in url_lower or ind in title_lower for ind in contact_indicators)
 
-        # Build final list - ONLY company websites
+                if is_contact_page:
+                    # Save for second pass - we'll check if domain becomes trusted
+                    pending_same_domain.append({
+                        'url': cleaned_url,
+                        'domain': domain,
+                        'title': title
+                    })
+                    logger.info(f"  Status: PENDING - Contact page, waiting for domain trust")
+                else:
+                    logger.info(f"  Status: EXCLUDED (no company keyword in domain/title)")
+                    excluded_count += 1
+
+        # SECOND PASS: Accept contact pages from trusted domains
+        logger.info(f"{'-'*80}")
+        logger.info(f"Second pass: Checking {len(pending_same_domain)} pending contact pages")
+        logger.info(f"Trusted domains: {trusted_domains}")
+
+        for pending in pending_same_domain:
+            if pending['domain'] in trusted_domains:
+                logger.info(f"  ACCEPTED contact page from trusted domain: {pending['url']}")
+                categorized['contact_pages'].append(pending['url'])
+            else:
+                logger.info(f"  REJECTED contact page (domain not trusted): {pending['url']}")
+                excluded_count += 1
+
+        # Build final list - prioritize: main page, then contact pages
         logger.info(f"{'-'*80}")
         logger.info("Smart Filtering Results:")
         logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
         logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
+        logger.info(f"  - Contact pages from trusted domains: {len(categorized['contact_pages'])}")
         logger.info(f"  - Excluded (directories/social/irrelevant): {excluded_count}")
         logger.info(f"  - Total discovered URLs: {len(all_discovered)}")
         logger.info(f"{'-'*80}")
 
         selected_websites = []
 
+        # PRIORITY ORDER: Contact pages FIRST (most likely to have contact info)
+        # Then main company page, then other pages
+
+        # 1. Add contact pages first (highest priority for contact extraction)
+        for url in categorized.get('contact_pages', []):
+            if url not in selected_websites:
+                selected_websites.append(url)
+                logger.info(f"ADDED [Contact page - PRIORITY]: {url}")
+
+        # 2. Add main company websites
         for category, label in [
             ('company_with_match', 'Company website (name match)'),
             ('company_no_match', 'Company website'),
@@ -652,7 +708,10 @@ class SearchService:
         """
         Extract website URLs from Bing search results - ONLY company websites.
         Also returns ALL discovered URLs for reference.
-        All directory sites are EXCLUDED.
+
+        Uses TWO-PASS approach (same as SerpAPI):
+        1. First pass: Find company websites with keyword match (establish trusted domains)
+        2. Second pass: Accept contact/about pages from trusted domains
 
         Args:
             data: Bing API response data
@@ -666,7 +725,7 @@ class SearchService:
         logger.info(f"{'='*80}")
         logger.info(f"Bing Search Results for: {company_name}")
         logger.info(f"Total results returned: {len(web_pages)}")
-        logger.info(f"FILTER: Only accepting company websites with keyword match")
+        logger.info(f"FILTER: Two-pass - keyword match then same-domain contact pages")
         logger.info(f"{'='*80}")
 
         # Extract keywords once for this company
@@ -675,12 +734,19 @@ class SearchService:
 
         # Track all discovered URLs and company websites separately
         all_discovered = []
+        trusted_domains = set()
         categorized = {
             'company_with_match': [],
             'company_no_match': [],
+            'contact_pages': [],
         }
+        pending_same_domain = []
         excluded_count = 0
 
+        # Contact page indicators
+        contact_indicators = ['contact', 'about', 'reach-us', 'get-in-touch', 'enquir']
+
+        # FIRST PASS: Find company websites with keyword match
         for idx, page in enumerate(web_pages, 1):
             url = page.get("url", "")
             title = page.get("name", "")
@@ -690,14 +756,15 @@ class SearchService:
             logger.info(f"  URL:   {url}")
 
             cleaned_url = self._clean_url(url)
+            domain = urlparse(url).netloc.lower()
 
             # Add ALL URLs to all_discovered (for reference column)
             if cleaned_url and cleaned_url not in all_discovered:
                 all_discovered.append(cleaned_url)
 
             # Check if excluded (social media, etc.)
-            if any(domain in url for domain in EXCLUDED_DOMAINS):
-                excluded_domain = next(domain for domain in EXCLUDED_DOMAINS if domain in url)
+            if any(excl_domain in url for excl_domain in EXCLUDED_DOMAINS):
+                excluded_domain = next(excl_domain for excl_domain in EXCLUDED_DOMAINS if excl_domain in url)
                 logger.info(f"  Status: EXCLUDED (domain: {excluded_domain})")
                 excluded_count += 1
                 continue
@@ -716,46 +783,84 @@ class SearchService:
                 excluded_count += 1
                 continue
 
-            # Check company name relevance - CRITICAL: prevents accepting random unrelated sites
-            if not self._is_relevant_to_company(url, title, company_name):
-                logger.info(f"  Status: EXCLUDED (no company keyword in domain/title)")
-                excluded_count += 1
-                continue
+            # Check company name relevance
+            is_relevant = self._is_relevant_to_company(url, title, company_name)
 
-            # Check for company name match (full name match)
-            title_match = company_name.lower() in title.lower()
-            url_match = company_name.lower() in url.lower()
-            has_name_match = title_match or url_match
+            if is_relevant:
+                trusted_domains.add(domain)
 
-            match_info = ""
-            if has_name_match:
-                match_type = []
-                if title_match:
-                    match_type.append("title")
-                if url_match:
-                    match_type.append("URL")
-                match_info = f", name match in {', '.join(match_type)}"
+                title_match = company_name.lower() in title.lower()
+                url_match = company_name.lower() in url.lower()
+                has_name_match = title_match or url_match
 
-            logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
-            logger.info(f"  Status: ACCEPTED - Company website (keyword match)")
+                match_info = ""
+                if has_name_match:
+                    match_type = []
+                    if title_match:
+                        match_type.append("title")
+                    if url_match:
+                        match_type.append("URL")
+                    match_info = f", name match in {', '.join(match_type)}"
 
-            # Only company websites make it here
-            if has_name_match:
-                categorized['company_with_match'].append(cleaned_url)
+                logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
+                logger.info(f"  Status: ACCEPTED - Company website (keyword match)")
+                logger.info(f"  Trusted domain added: {domain}")
+
+                if has_name_match:
+                    categorized['company_with_match'].append(cleaned_url)
+                else:
+                    categorized['company_no_match'].append(cleaned_url)
             else:
-                categorized['company_no_match'].append(cleaned_url)
+                url_lower = url.lower()
+                title_lower = title.lower()
+                is_contact_page = any(ind in url_lower or ind in title_lower for ind in contact_indicators)
 
-        # Build final list - ONLY company websites
+                if is_contact_page:
+                    pending_same_domain.append({
+                        'url': cleaned_url,
+                        'domain': domain,
+                        'title': title
+                    })
+                    logger.info(f"  Status: PENDING - Contact page, waiting for domain trust")
+                else:
+                    logger.info(f"  Status: EXCLUDED (no company keyword in domain/title)")
+                    excluded_count += 1
+
+        # SECOND PASS: Accept contact pages from trusted domains
+        logger.info(f"{'-'*80}")
+        logger.info(f"Second pass: Checking {len(pending_same_domain)} pending contact pages")
+        logger.info(f"Trusted domains: {trusted_domains}")
+
+        for pending in pending_same_domain:
+            if pending['domain'] in trusted_domains:
+                logger.info(f"  ACCEPTED contact page from trusted domain: {pending['url']}")
+                categorized['contact_pages'].append(pending['url'])
+            else:
+                logger.info(f"  REJECTED contact page (domain not trusted): {pending['url']}")
+                excluded_count += 1
+
+        # Build final list
         logger.info(f"{'-'*80}")
         logger.info("Smart Filtering Results:")
         logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
         logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
+        logger.info(f"  - Contact pages from trusted domains: {len(categorized['contact_pages'])}")
         logger.info(f"  - Excluded (directories/social/irrelevant): {excluded_count}")
         logger.info(f"  - Total discovered URLs: {len(all_discovered)}")
         logger.info(f"{'-'*80}")
 
         selected_websites = []
 
+        # PRIORITY ORDER: Contact pages FIRST (most likely to have contact info)
+        # Then main company page, then other pages
+
+        # 1. Add contact pages first (highest priority for contact extraction)
+        for url in categorized.get('contact_pages', []):
+            if url not in selected_websites:
+                selected_websites.append(url)
+                logger.info(f"ADDED [Contact page - PRIORITY]: {url}")
+
+        # 2. Add main company websites
         for category, label in [
             ('company_with_match', 'Company website (name match)'),
             ('company_no_match', 'Company website'),
