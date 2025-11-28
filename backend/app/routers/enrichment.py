@@ -545,19 +545,23 @@ async def enrich_single_company(
                 else:
                     logger.info(f"No email found on {maps_website}")
 
-            # If we have phone from Maps, consider it a success even without email
-            if phone:
-                if not email:
-                    status_parts.append('no email found')
-
-    # ============================================
+            # ============================================
     # STEP 3: Fallback to Web Search if needed
     # ============================================
     # Track all discovered URLs from web search (including directories) for reference
     all_discovered_urls = []
 
-    if not phone and not website:
-        logger.info(f"Step 3: Fallback to web search for {company['name']}")
+    # Fallback if we're missing phone, website, OR email
+    # This ensures we try web search even if Google Maps only gave us a phone
+    if not phone or not website or not email:
+        missing = []
+        if not phone:
+            missing.append('phone')
+        if not website:
+            missing.append('website')
+        if not email:
+            missing.append('email')
+        logger.info(f"Step 3: Fallback to web search for {company['name']} (missing: {', '.join(missing)})")
 
         search_result = await search_service.search_company_websites(
             company['name'],
