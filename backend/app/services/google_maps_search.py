@@ -215,10 +215,18 @@ class GoogleMapsSearchService:
         if not address:
             return None
 
-        # Common Singapore street suffixes
+        # Common Singapore street suffixes and Malay road names (Jalan, Lorong, etc.)
         street_patterns = [
+            # Standard English street names
             r'(?:BLK\s+\d+[A-Z]?\s*,?\s*)?([A-Z][A-Z\s]+(?:ROAD|STREET|AVENUE|DRIVE|LANE|PLACE|WAY|CRESCENT|TERRACE|BOULEVARD|CLOSE|HILL|PARK|WALK|LINK|RISE|VIEW|HEIGHTS|GARDENS))',
             r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Road|Street|Avenue|Drive|Lane|Place|Way|Crescent|Terrace|Boulevard|Close|Hill|Park|Walk|Link|Rise|View|Heights|Gardens))',
+            # Malay road names (Jalan, Lorong, Taman, etc.)
+            r'(JALAN\s+[A-Z][A-Z\s]+)',
+            r'(JLN\.?\s+[A-Z][A-Z\s]+)',
+            r'(LORONG\s+[A-Z0-9][A-Z0-9\s]*)',
+            r'(TAMAN\s+[A-Z][A-Z\s]+)',
+            r'(Jalan\s+[A-Za-z][A-Za-z\s]+)',
+            r'(Lorong\s+[A-Za-z0-9][A-Za-z0-9\s]*)',
         ]
 
         for pattern in street_patterns:
