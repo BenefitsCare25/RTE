@@ -42,6 +42,8 @@ DIRECTORY_DOMAINS = [
     'scam.sg',
     'companieshouse.sg',
     'sgx.com',  # Stock exchange - no contact info
+    'sg.globaldatabase.com',  # Global database directory
+    'singapore-corp.com',  # Singapore company directory
     # International directories
     'dnb.com',
     'crunchbase.com',
