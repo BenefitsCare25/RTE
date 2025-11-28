@@ -103,10 +103,10 @@ class SearchService:
             'all_discovered': []
         }
 
-        # Try SerpAPI first
+        # Try SerpAPI first with multiple query strategies
         if self.serpapi_key:
-            logger.info("Using SerpAPI to find company websites...")
-            search_result = await self._search_with_serpapi(company_name, uen)
+            logger.info("Using SerpAPI with multi-strategy search...")
+            search_result = await self._search_with_serpapi(company_name, uen, address)
             if search_result:
                 result = search_result
                 logger.info(f"✓ Found {len(result['company_websites'])} company websites, {len(result['all_discovered'])} total discovered")
@@ -130,47 +130,138 @@ class SearchService:
 
         return result
 
+    def _generate_search_queries(self, company_name: str, uen: str, address: str) -> List[Dict[str, str]]:
+        """
+        Generate multiple search query strategies to find actual company websites.
+
+        The key insight: Directory sites rank for "UEN" searches, but company's own
+        websites rank for "official website", "contact", and branded searches.
+
+        Returns list of query strategies in priority order.
+        """
+        # Clean company name - remove common suffixes for cleaner search
+        clean_name = company_name
+        for suffix in [' PTE LTD', ' PTE. LTD.', ' PRIVATE LIMITED', ' LIMITED', ' LTD', ' LTD.',
+                       ' PTE', ' SINGAPORE', ' (S)', ' (SINGAPORE)', ' CORP', ' CORPORATION',
+                       ' HOLDINGS', ' ENTERPRISES', ' SERVICES', ' TRADING', ' INTERNATIONAL']:
+            clean_name = clean_name.replace(suffix, '').replace(suffix.lower(), '').replace(suffix.title(), '')
+        clean_name = clean_name.strip()
+
+        # Extract postal code from address if available
+        postal_match = re.search(r'Singapore\s*(\d{6})', address, re.IGNORECASE)
+        postal_code = postal_match.group(1) if postal_match else None
+
+        queries = [
+            # Strategy 1: Official website search - most likely to return company's own site
+            {
+                "query": f'"{clean_name}" official website Singapore',
+                "strategy": "official_website",
+                "description": "Search for official website mention"
+            },
+            # Strategy 2: Contact us page - companies have contact pages, directories don't
+            {
+                "query": f'"{clean_name}" Singapore contact email',
+                "strategy": "contact_page",
+                "description": "Search for contact page with email"
+            },
+            # Strategy 3: Exclude common directories explicitly
+            {
+                "query": f'"{clean_name}" Singapore -yellowpages -directory -sgpbusiness -linkedin -facebook',
+                "strategy": "exclude_directories",
+                "description": "Company name excluding known directories"
+            },
+            # Strategy 4: Site-specific search for .com.sg or .sg domains (Singapore company domains)
+            {
+                "query": f'site:*.com.sg OR site:*.sg "{clean_name}"',
+                "strategy": "sg_domain",
+                "description": "Search Singapore domains only"
+            },
+            # Strategy 5: Original query as last resort (may return directories)
+            {
+                "query": f"{company_name} Singapore",
+                "strategy": "basic",
+                "description": "Basic company name search"
+            },
+        ]
+
+        return queries
+
     async def _search_with_serpapi(
         self,
         company_name: str,
-        uen: str
+        uen: str,
+        address: str = ""
     ) -> Dict[str, List[str]]:
         """
-        Search using SerpAPI (Google Custom Search)
+        Search using SerpAPI with multiple query strategies.
+
+        Tries different search queries until it finds actual company websites,
+        not just directory listings.
 
         Args:
             company_name: Name of the company
             uen: UEN number
+            address: Company address (for postal code extraction)
 
         Returns:
             Dictionary with 'company_websites' and 'all_discovered' lists
         """
-        try:
-            query = f"{company_name} Singapore UEN {uen}"
+        all_discovered_urls = []
 
-            params = {
-                "api_key": self.serpapi_key,
-                "q": query,
-                "location": "Singapore",
-                "hl": "en",
-                "gl": "sg",
-                "num": 5
-            }
+        # Generate multiple search strategies
+        queries = self._generate_search_queries(company_name, uen, address)
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    "https://serpapi.com/search",
-                    params=params
-                )
+        for query_info in queries:
+            query = query_info["query"]
+            strategy = query_info["strategy"]
+            description = query_info["description"]
 
-                if response.status_code == 200:
-                    data = response.json()
-                    return self._extract_websites_from_results(data, company_name)
+            logger.info(f"SerpAPI Strategy [{strategy}]: {description}")
+            logger.info(f"  Query: {query}")
 
-        except Exception as e:
-            logger.error(f"SerpAPI search error: {str(e)}")
+            try:
+                params = {
+                    "api_key": self.serpapi_key,
+                    "q": query,
+                    "location": "Singapore",
+                    "hl": "en",
+                    "gl": "sg",
+                    "num": 10  # Get more results to increase chances
+                }
 
-        return {'company_websites': [], 'all_discovered': []}
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(
+                        "https://serpapi.com/search",
+                        params=params
+                    )
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        result = self._extract_websites_from_results(data, company_name)
+
+                        # Collect all discovered URLs across all strategies
+                        for url in result.get('all_discovered', []):
+                            if url not in all_discovered_urls:
+                                all_discovered_urls.append(url)
+
+                        # If we found actual company websites, return immediately
+                        if result.get('company_websites'):
+                            logger.info(f"SUCCESS with strategy [{strategy}]: Found {len(result['company_websites'])} company website(s)")
+                            result['all_discovered'] = all_discovered_urls
+                            return result
+                        else:
+                            logger.info(f"Strategy [{strategy}] returned only directories, trying next strategy...")
+
+                    # Small delay between API calls to be respectful
+                    await asyncio.sleep(0.3)
+
+            except Exception as e:
+                logger.error(f"SerpAPI search error with strategy [{strategy}]: {str(e)}")
+                continue
+
+        # If no strategy found company websites, return all discovered URLs for reference
+        logger.warning(f"All {len(queries)} search strategies failed to find company websites")
+        return {'company_websites': [], 'all_discovered': all_discovered_urls}
 
     async def _search_with_bing(
         self,
