@@ -97,10 +97,14 @@ export async function enrichCompaniesWithProgress(
       buffer += chunk;
 
       // Parse SSE events from buffer
-      // SSE format: "data: {...}\n\n"
-      const events = buffer.split('\n\n');
-      // Keep the last incomplete chunk in buffer
-      buffer = events.pop() || '';
+      // SSE format can use \n\n, \r\n\r\n, or \r\r as event separators
+      // Normalize all line endings first, then split by double newline
+      const normalizedBuffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const events = normalizedBuffer.split('\n\n');
+      // Keep the last incomplete chunk in buffer (but keep original buffer for proper byte tracking)
+      // We need to track how much of the original buffer was consumed
+      const lastEvent = events.pop() || '';
+      buffer = lastEvent;
 
       for (const eventBlock of events) {
         processBuffer(eventBlock, onProgress);
