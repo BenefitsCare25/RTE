@@ -36,6 +36,7 @@ DIRECTORY_DOMAINS = [
     'ltddir.com',
     'keepital.com',        # Business contact directory
     'soopage.com',         # Singapore business directory
+    'singaporebusinessguide.com',  # Business directory with category listings
     # Singapore company directories (added)
     'sgpgrid.com',
     'scam.sg',
