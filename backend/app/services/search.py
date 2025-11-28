@@ -18,26 +18,54 @@ CLOUDFLARE_PROTECTED_DOMAINS = [
     'bizprofile.com',
 ]
 
-# Sites that typically work well without heavy protection
-PREFERRED_DOMAINS = [
+# DIRECTORY SITES TO EXCLUDE - These are business directories, NOT company websites
+# We want to find actual company domains, not directory listings
+DIRECTORY_DOMAINS = [
+    # Singapore business directories
     'yellowpages.com.sg',
     'streetdirectory.com',
     'yelp.com.sg',
     'sgbusiness.directory',
     'singapore-ede.com',
+    'sgpbusiness.com',
+    'companies.sg',
+    'bizprofile.com',
+    'opengovsg.com',
+    'recordowl.com',
+    'sg.ltddir.com',
+    'ltddir.com',
+    # International directories
     'dnb.com',
     'crunchbase.com',
     'zoominfo.com',
+    'bloomberg.com',
+    'yelp.com',
+    'yellowpages.com',
+    # Company registries (no contact info)
+    'bizfile.gov.sg',
+    'acra.gov.sg',
+    # Job/review sites
+    'glassdoor.com',
+    'indeed.com',
+    'jobstreet.com',
 ]
 
-# Domains to completely exclude (no useful contact data)
+# Sites that typically work well without heavy protection
+# NOTE: These are now EXCLUDED as they are directories
+PREFERRED_DOMAINS = [
+    # Empty - we no longer want to scrape directory sites
+    # Only actual company websites should be scraped
+]
+
+# Domains to completely exclude (social media, no useful contact data)
 EXCLUDED_DOMAINS = [
+    # Social media
     'facebook.com', 'linkedin.com', 'instagram.com',
-    'twitter.com', 'youtube.com', 'wikipedia.org',
-    'bizfile.gov.sg',  # Official registry, no contact info
-    'tiktok.com', 'pinterest.com',
-    'sgpbusiness.com',  # Directory site, no direct contact info
-    'opengovsg.com',  # Government data aggregator, no contact info
+    'twitter.com', 'x.com', 'youtube.com', 'tiktok.com', 'pinterest.com',
+    # Reference sites
+    'wikipedia.org',
+    # Include all directory domains in exclusion
+    *DIRECTORY_DOMAINS,
 ]
 
 
@@ -181,31 +209,36 @@ class SearchService:
         """
         Classify a URL and return its priority (lower = better)
 
-        Priority levels:
-        1 - Company's own website (highest priority)
-        2 - Preferred domains (known to work well)
-        3 - Other valid domains
-        4 - Cloudflare-protected domains (lowest priority, try last)
+        NEW PRIORITY LOGIC - Only accept actual company websites, exclude directories:
+        1 - Company's own website (ONLY acceptable option)
+        99 - Directory sites (EXCLUDED - do not scrape)
+        99 - Cloudflare-protected directories (EXCLUDED)
 
         Returns:
             Tuple of (classification_label, priority_number)
         """
         domain = urlparse(url).netloc.lower()
 
-        # Check if it's a Cloudflare-protected site
+        # FIRST: Check if it's a directory site (EXCLUDE these)
+        if any(dir_domain in domain for dir_domain in DIRECTORY_DOMAINS):
+            logger.info(f"EXCLUDING directory site: {domain}")
+            return ("directory_excluded", 99)
+
+        # Check if it's a Cloudflare-protected site (likely a directory)
         if any(cf_domain in domain for cf_domain in CLOUDFLARE_PROTECTED_DOMAINS):
-            return ("cloudflare_protected", 4)
+            logger.info(f"EXCLUDING cloudflare-protected directory: {domain}")
+            return ("cloudflare_excluded", 99)
 
-        # Check if it's a preferred domain
-        if any(pref_domain in domain for pref_domain in PREFERRED_DOMAINS):
-            return ("preferred", 2)
+        # Check for common directory URL patterns
+        directory_indicators = ['directory', 'listing', 'yellowpages', 'whitepages',
+                               'businesslist', 'companies', 'registry', 'profiles',
+                               'bizlist', 'companylist']
+        if any(ind in domain for ind in directory_indicators):
+            logger.info(f"EXCLUDING URL with directory indicator: {domain}")
+            return ("directory_pattern_excluded", 99)
 
-        # Check if it's likely a company's own website (not a directory)
-        directory_indicators = ['directory', 'listing', 'business', 'companies', 'corp', 'registry']
-        if not any(ind in domain for ind in directory_indicators):
-            return ("company_website", 1)
-
-        return ("other", 3)
+        # If we get here, it's likely a company's own website - ACCEPT
+        return ("company_website", 1)
 
     def _extract_websites_from_results(
         self,
@@ -213,36 +246,32 @@ class SearchService:
         company_name: str
     ) -> List[str]:
         """
-        Extract website URLs from SerpAPI results with smart prioritization
+        Extract website URLs from SerpAPI results - ONLY company websites.
 
-        Priority order:
-        1. Company's own website with name match
-        2. Preferred domains (yellowpages, etc.)
-        3. Other valid domains
-        4. Cloudflare-protected domains (last resort)
+        NEW BEHAVIOR: Only returns actual company domain websites.
+        All directory sites (yellowpages, sgpbusiness, etc.) are EXCLUDED.
 
         Args:
             data: SerpAPI response data
             company_name: Company name for validation
 
         Returns:
-            List of website URLs sorted by priority
+            List of company website URLs (directories excluded)
         """
         organic_results = data.get("organic_results", [])
 
         logger.info(f"{'='*80}")
-        logger.info(f"SerpAPI Search Results for: {company_name}")
+        logger.info(f"Web Search Results for: {company_name}")
         logger.info(f"Total results returned: {len(organic_results)}")
+        logger.info(f"FILTER: Only accepting actual company websites, excluding all directories")
         logger.info(f"{'='*80}")
 
-        # Categorize all results
+        # Only categorize company websites now
         categorized = {
             'company_with_match': [],    # Priority 1: Own website + name match
             'company_no_match': [],      # Priority 2: Own website, no name match
-            'preferred': [],             # Priority 3: Preferred domains
-            'other': [],                 # Priority 4: Other valid domains
-            'cloudflare': [],            # Priority 5: CF-protected (last resort)
         }
+        excluded_count = 0
 
         for idx, result in enumerate(organic_results, 1):
             url = result.get("link", "")
@@ -252,14 +281,21 @@ class SearchService:
             logger.info(f"  Title: {title}")
             logger.info(f"  URL:   {url}")
 
-            # Check if excluded
+            # Check if excluded (social media, etc.)
             if any(domain in url for domain in EXCLUDED_DOMAINS):
                 excluded_domain = next(domain for domain in EXCLUDED_DOMAINS if domain in url)
                 logger.info(f"  Status: EXCLUDED (domain: {excluded_domain})")
+                excluded_count += 1
                 continue
 
             cleaned_url = self._clean_url(url)
             classification, priority = self._classify_url(url)
+
+            # Skip any non-company-website results (directories get priority 99)
+            if priority >= 99:
+                logger.info(f"  Status: EXCLUDED ({classification})")
+                excluded_count += 1
+                continue
 
             # Check for company name match
             title_match = company_name.lower() in title.lower()
@@ -276,28 +312,20 @@ class SearchService:
                 match_info = f", name match in {', '.join(match_type)}"
 
             logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
+            logger.info(f"  Status: ACCEPTED - Company website")
 
-            # Categorize based on classification and name match
-            if classification == "company_website":
-                if has_name_match:
-                    categorized['company_with_match'].append(cleaned_url)
-                else:
-                    categorized['company_no_match'].append(cleaned_url)
-            elif classification == "preferred":
-                categorized['preferred'].append(cleaned_url)
-            elif classification == "cloudflare_protected":
-                categorized['cloudflare'].append(cleaned_url)
+            # Only company websites make it here
+            if has_name_match:
+                categorized['company_with_match'].append(cleaned_url)
             else:
-                categorized['other'].append(cleaned_url)
+                categorized['company_no_match'].append(cleaned_url)
 
-        # Build final list in priority order
+        # Build final list - ONLY company websites
         logger.info(f"{'-'*80}")
-        logger.info("Smart Prioritization Strategy:")
-        logger.info("  1. Company websites with name match (best)")
-        logger.info("  2. Company websites without name match")
-        logger.info("  3. Preferred domains (yellowpages, etc.)")
-        logger.info("  4. Other valid domains")
-        logger.info("  5. Cloudflare-protected domains (last resort)")
+        logger.info("Smart Filtering Results:")
+        logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
+        logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
+        logger.info(f"  - Excluded (directories/social): {excluded_count}")
         logger.info(f"{'-'*80}")
 
         selected_websites = []
@@ -305,17 +333,17 @@ class SearchService:
         for category, label in [
             ('company_with_match', 'Company website (name match)'),
             ('company_no_match', 'Company website'),
-            ('preferred', 'Preferred domain'),
-            ('other', 'Other valid'),
-            ('cloudflare', 'Cloudflare-protected (fallback)'),
         ]:
-            for url in categorized[category]:
+            for url in categorized.get(category, []):
                 if url not in selected_websites:
                     selected_websites.append(url)
                     logger.info(f"ADDED [{label}]: {url}")
 
         logger.info(f"{'-'*80}")
-        logger.info(f"TOTAL SELECTED: {len(selected_websites)} websites (sorted by scraping success likelihood)")
+        if selected_websites:
+            logger.info(f"TOTAL SELECTED: {len(selected_websites)} company website(s)")
+        else:
+            logger.info("NO company websites found - fallback will return empty")
         logger.info(f"{'='*80}")
 
         return selected_websites
@@ -326,30 +354,32 @@ class SearchService:
         company_name: str
     ) -> List[str]:
         """
-        Extract website URLs from Bing search results with smart prioritization
+        Extract website URLs from Bing search results - ONLY company websites.
+
+        NEW BEHAVIOR: Only returns actual company domain websites.
+        All directory sites are EXCLUDED.
 
         Args:
             data: Bing API response data
             company_name: Company name for validation
 
         Returns:
-            List of website URLs sorted by priority
+            List of company website URLs (directories excluded)
         """
         web_pages = data.get("webPages", {}).get("value", [])
 
         logger.info(f"{'='*80}")
         logger.info(f"Bing Search Results for: {company_name}")
         logger.info(f"Total results returned: {len(web_pages)}")
+        logger.info(f"FILTER: Only accepting actual company websites, excluding all directories")
         logger.info(f"{'='*80}")
 
-        # Categorize all results (same logic as SerpAPI)
+        # Only categorize company websites
         categorized = {
             'company_with_match': [],
             'company_no_match': [],
-            'preferred': [],
-            'other': [],
-            'cloudflare': [],
         }
+        excluded_count = 0
 
         for idx, page in enumerate(web_pages, 1):
             url = page.get("url", "")
@@ -359,14 +389,21 @@ class SearchService:
             logger.info(f"  Title: {title}")
             logger.info(f"  URL:   {url}")
 
-            # Check if excluded
+            # Check if excluded (social media, etc.)
             if any(domain in url for domain in EXCLUDED_DOMAINS):
                 excluded_domain = next(domain for domain in EXCLUDED_DOMAINS if domain in url)
                 logger.info(f"  Status: EXCLUDED (domain: {excluded_domain})")
+                excluded_count += 1
                 continue
 
             cleaned_url = self._clean_url(url)
             classification, priority = self._classify_url(url)
+
+            # Skip any non-company-website results (directories get priority 99)
+            if priority >= 99:
+                logger.info(f"  Status: EXCLUDED ({classification})")
+                excluded_count += 1
+                continue
 
             # Check for company name match
             title_match = company_name.lower() in title.lower()
@@ -383,36 +420,37 @@ class SearchService:
                 match_info = f", name match in {', '.join(match_type)}"
 
             logger.info(f"  Classification: {classification} (priority {priority}){match_info}")
+            logger.info(f"  Status: ACCEPTED - Company website")
 
-            # Categorize
-            if classification == "company_website":
-                if has_name_match:
-                    categorized['company_with_match'].append(cleaned_url)
-                else:
-                    categorized['company_no_match'].append(cleaned_url)
-            elif classification == "preferred":
-                categorized['preferred'].append(cleaned_url)
-            elif classification == "cloudflare_protected":
-                categorized['cloudflare'].append(cleaned_url)
+            # Only company websites make it here
+            if has_name_match:
+                categorized['company_with_match'].append(cleaned_url)
             else:
-                categorized['other'].append(cleaned_url)
+                categorized['company_no_match'].append(cleaned_url)
 
-        # Build final list in priority order
+        # Build final list - ONLY company websites
+        logger.info(f"{'-'*80}")
+        logger.info("Smart Filtering Results:")
+        logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
+        logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
+        logger.info(f"  - Excluded (directories/social): {excluded_count}")
+        logger.info(f"{'-'*80}")
+
         selected_websites = []
 
         for category, label in [
             ('company_with_match', 'Company website (name match)'),
             ('company_no_match', 'Company website'),
-            ('preferred', 'Preferred domain'),
-            ('other', 'Other valid'),
-            ('cloudflare', 'Cloudflare-protected (fallback)'),
         ]:
-            for url in categorized[category]:
+            for url in categorized.get(category, []):
                 if url not in selected_websites:
                     selected_websites.append(url)
                     logger.info(f"ADDED [{label}]: {url}")
 
-        logger.info(f"TOTAL SELECTED: {len(selected_websites)} websites from Bing (sorted by priority)")
+        if selected_websites:
+            logger.info(f"TOTAL SELECTED: {len(selected_websites)} company website(s) from Bing")
+        else:
+            logger.info("NO company websites found from Bing - fallback will return empty")
         return selected_websites
 
     @staticmethod

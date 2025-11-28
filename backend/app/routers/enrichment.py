@@ -222,6 +222,115 @@ async def get_status():
     }
 
 
+@router.get("/debug/google-maps")
+async def debug_google_maps_search(
+    company_name: str,
+    address: str = "",
+    uen: str = ""
+):
+    """
+    Debug endpoint to test Google Maps search independently.
+    Returns full SerpAPI response details for analysis.
+
+    Usage:
+        GET /api/debug/google-maps?company_name=DBS%20Bank&address=Marina%20Bay
+    """
+    import httpx
+    import os
+
+    maps_service = GoogleMapsSearchService()
+
+    if not maps_service.serpapi_key:
+        return {
+            "error": "SERPAPI_KEY not configured",
+            "serpapi_key_set": False
+        }
+
+    postal_code = maps_service._extract_postal_code(address)
+
+    # Build query strategies to test
+    query_strategies = []
+    if postal_code:
+        query_strategies.append(f'"{company_name}" Singapore {postal_code}')
+    query_strategies.append(f'"{company_name}" Singapore')
+    query_strategies.append(f'{company_name} Singapore')
+    query_strategies.append(company_name)
+
+    debug_results = []
+
+    for query in query_strategies:
+        try:
+            params = {
+                "engine": "google_maps",
+                "q": query,
+                "ll": maps_service.sg_coords,
+                "type": "search",
+                "hl": "en",
+                "gl": "sg",
+                "api_key": maps_service.serpapi_key
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    "https://serpapi.com/search",
+                    params=params
+                )
+                data = response.json()
+
+                query_info = {
+                    "query": query,
+                    "status_code": response.status_code,
+                    "response_keys": list(data.keys()),
+                    "has_error": "error" in data,
+                    "error_message": data.get("error"),
+                    "local_results_count": len(data.get("local_results", [])),
+                    "has_place_results": bool(data.get("place_results")),
+                    "search_metadata": data.get("search_metadata", {}),
+                    "search_information": data.get("search_information", {}),
+                }
+
+                # Sample first 3 results
+                local = data.get("local_results", [])[:3]
+                query_info["sample_results"] = [
+                    {
+                        "title": r.get("title"),
+                        "address": r.get("address"),
+                        "phone": r.get("phone"),
+                        "website": r.get("website"),
+                        "rating": r.get("rating"),
+                    }
+                    for r in local
+                ]
+
+                debug_results.append(query_info)
+
+                # If we found results, no need to try more queries
+                if local:
+                    break
+
+        except Exception as e:
+            debug_results.append({
+                "query": query,
+                "error": str(e)
+            })
+
+    # Also run the normal search method to compare
+    normal_result = await maps_service.search_business(company_name, address, uen)
+
+    return {
+        "input": {
+            "company_name": company_name,
+            "address": address,
+            "uen": uen,
+            "extracted_postal_code": postal_code,
+        },
+        "serpapi_key_configured": True,
+        "sg_coords": maps_service.sg_coords,
+        "query_attempts": debug_results,
+        "final_parsed_result": normal_result
+    }
+
+
 @router.post("/enrich-stream")
 async def enrich_companies_stream(file: UploadFile = File(...)):
     """
