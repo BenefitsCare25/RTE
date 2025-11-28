@@ -44,6 +44,24 @@ DIRECTORY_DOMAINS = [
     'sgx.com',  # Stock exchange - no contact info
     'sg.globaldatabase.com',  # Global database directory
     'singapore-corp.com',  # Singapore company directory
+    # Property and real estate directories (NOT company websites)
+    'propertyforsale.com.sg',  # Property listing site
+    'propertyguru.com.sg',     # Property listing site
+    'iproperty.com.sg',        # Property listing site
+    '99.co',                   # Property listing site
+    'srx.com.sg',              # Property listing site
+    # Singapore info/directory aggregators
+    'tellme.sg',               # Singapore business lookup
+    'sg.bdir.in',              # Business directory India
+    'guidesify.com',           # App guide directory
+    'app.guidesify.com',       # App guide directory
+    'indialei.in',             # India LEI directory (company identifier)
+    'lei.info',                # LEI directory
+    'lei-lookup.com',          # LEI directory
+    # Legal/litigation sites (NOT company websites)
+    'elitigation.sg',          # Court cases - not company info
+    'lawnet.sg',               # Legal database
+    'statecourts.gov.sg',      # Court records
     # International directories
     'dnb.com',
     'crunchbase.com',
@@ -52,6 +70,7 @@ DIRECTORY_DOMAINS = [
     'yelp.com',
     'yellowpages.com',
     'rocketreach.co',      # Contact lookup directory
+    'bdir.in',             # Business directory (any subdomain)
     # Trade/business directories
     'volza.com',
     'inriskable.com',
@@ -84,6 +103,17 @@ DIRECTORY_DOMAINS = [
     'mynewsdesk.com',
     'prnewswire.com',
     'businesswire.com',
+    # News/media sites (NOT company websites - they report ON companies)
+    'businesstimes.com.sg',    # Singapore business news
+    'straitstimes.com',        # Singapore news
+    'channelnewsasia.com',     # Singapore news
+    'todayonline.com',         # Singapore news
+    'asiaone.com',             # Singapore news
+    'techinasia.com',          # Tech news
+    'e27.co',                  # Tech news/startup directory
+    'reuters.com',             # International news
+    'ft.com',                  # Financial Times
+    'wsj.com',                 # Wall Street Journal
     # Archive/library/government (no company contacts)
     'archive.org',
     'nlb.gov.sg',
@@ -141,10 +171,14 @@ class SearchService:
         significant words (3+ chars) that can be used to match against
         domain names and page titles.
 
+        IMPORTANT: We preserve words like ASIA, ENTERPRISES if they're the PRIMARY
+        identifying words. Only filter them if other keywords exist.
+
         Examples:
             "ASTRABON (S) PTE LTD" → ["astrabon"]
             "A.T.E. MASKATI PRIVATE LIMITED" → ["ate", "maskati"]
             "AMOY CANNING CORPORATION" → ["amoy", "canning"]
+            "ASIA ENTERPRISES (PRIVATE) LIMITED" → ["asia", "enterprises"]
         """
         # Normalize: uppercase, remove dots early (for A.T.E. → ATE)
         clean = company_name.upper()
@@ -164,11 +198,6 @@ class SearchService:
             r'\s+BHD$',
             r'\s+CORPORATION$',
             r'\s+CORP$',
-            r'\s+HOLDINGS$',
-            r'\s+ENTERPRISES$',
-            r'\s+SERVICES$',
-            r'\s+TRADING$',
-            r'\s+INTERNATIONAL$',
             r'\s+INC$',
             r'\s+LLC$',
             r'\s+LLP$',
@@ -189,12 +218,31 @@ class SearchService:
         # Split into words, keep only significant ones (3+ chars)
         words = re.findall(r'\b[A-Z]{3,}\b', clean)
 
-        # Remove common words that don't help identify the company
-        common = {'THE', 'AND', 'FOR', 'PTE', 'LTD', 'SDN', 'BHD', 'INC', 'LLC',
-                  'COMPANY', 'GROUP', 'ASIA', 'PACIFIC', 'SINGAPORE', 'GLOBAL',
-                  'CORPORATION', 'CORP', 'HOLDINGS', 'ENTERPRISES', 'SERVICES',
-                  'TRADING', 'INTERNATIONAL', 'PRIVATE', 'LIMITED'}
-        keywords = [w.lower() for w in words if w not in common]
+        # STRICT common words - only truly generic terms that NEVER identify a company
+        # Note: Words like ASIA, ENTERPRISES, HOLDINGS, SERVICES, TRADING are kept
+        # because they may be the ONLY identifying part of a company name
+        strict_common = {'THE', 'AND', 'FOR', 'PTE', 'LTD', 'SDN', 'BHD', 'INC', 'LLC',
+                        'COMPANY', 'PRIVATE', 'LIMITED'}
+
+        # Secondary common words - only remove if other keywords exist
+        secondary_common = {'ASIA', 'PACIFIC', 'SINGAPORE', 'GLOBAL', 'GROUP',
+                          'CORPORATION', 'CORP', 'HOLDINGS', 'ENTERPRISES',
+                          'SERVICES', 'TRADING', 'INTERNATIONAL'}
+
+        # First pass: Remove strict common words
+        keywords = [w.lower() for w in words if w not in strict_common]
+
+        # Second pass: Only remove secondary common words if we have other unique keywords
+        unique_keywords = [k for k in keywords if k.upper() not in secondary_common]
+
+        if unique_keywords:
+            # We have unique keywords, safe to remove secondary common words
+            keywords = unique_keywords
+            logger.debug(f"  Keyword extraction: removed secondary common words, kept {keywords}")
+        else:
+            # No unique keywords - keep secondary common words as they're the primary identifier
+            # e.g., "ASIA ENTERPRISES" → ["asia", "enterprises"]
+            logger.info(f"  Keyword extraction: keeping secondary common words as primary identifiers: {keywords}")
 
         return keywords
 

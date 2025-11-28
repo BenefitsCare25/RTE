@@ -247,6 +247,11 @@ class GoogleMapsSearchService:
         Find the best matching business from Google Maps results.
         Checks multiple response keys as SerpAPI may return different structures.
 
+        IMPORTANT: Stricter matching to avoid wrong company matches.
+        - Minimum score threshold of 70 (was 20)
+        - Requires significant name overlap, not just word matches
+        - Penalizes matches that look like buildings/hotels instead of the company
+
         Args:
             data: SerpAPI response data
             company_name: Company name to match
@@ -287,44 +292,83 @@ class GoogleMapsSearchService:
 
         logger.info(f"Total {len(results)} Google Maps results to evaluate")
 
+        # Extract company keywords for matching (ignore common suffixes)
+        company_keywords = self._extract_company_keywords(company_name)
+        logger.info(f"Company keywords for matching: {company_keywords}")
+
         # Score each result
         scored_results = []
         company_name_lower = company_name.lower()
+        # Remove common suffixes for cleaner comparison
+        company_name_clean = self._clean_company_name(company_name)
 
         for idx, result in enumerate(results):
             score = 0
-            title = result.get("title", "").lower()
+            title = result.get("title", "")
+            title_lower = title.lower()
+            title_clean = self._clean_company_name(title)
             result_address = result.get("address", "")
 
-            # Name matching (most important)
-            if company_name_lower == title:
-                score += 100  # Exact match
-            elif company_name_lower in title or title in company_name_lower:
-                score += 50  # Partial match
-            else:
-                # Check for word overlap
-                name_words = set(company_name_lower.split())
-                title_words = set(title.split())
-                overlap = len(name_words & title_words)
-                score += overlap * 10
+            # Penalty indicators - businesses that are NOT the company we're looking for
+            # Hotels, buildings, landmarks at the same address
+            building_indicators = ['hotel', 'tower', 'building', 'plaza', 'centre', 'center',
+                                   'mall', 'complex', 'arcade', 'court', 'house', 'mansion']
+            is_building = any(ind in title_lower for ind in building_indicators)
 
-            # Postal code matching (very reliable for Singapore)
+            # Name matching (most important) - STRICTER SCORING
+            if company_name_clean.lower() == title_clean.lower():
+                score += 150  # Exact match after cleaning - highest confidence
+                logger.info(f"  Result #{idx+1}: EXACT name match (cleaned)")
+            elif company_name_lower == title_lower:
+                score += 140  # Exact match
+                logger.info(f"  Result #{idx+1}: EXACT name match")
+            elif company_name_clean.lower() in title_clean.lower() or title_clean.lower() in company_name_clean.lower():
+                score += 80  # One contains the other (after cleaning)
+            elif company_name_lower in title_lower or title_lower in company_name_lower:
+                score += 70  # Partial match
+            else:
+                # Check for keyword overlap - must have SIGNIFICANT overlap
+                title_keywords = self._extract_company_keywords(title)
+                if company_keywords and title_keywords:
+                    matching_keywords = set(company_keywords) & set(title_keywords)
+                    total_keywords = len(company_keywords)
+                    match_ratio = len(matching_keywords) / total_keywords if total_keywords > 0 else 0
+
+                    if match_ratio >= 0.5:  # At least 50% of keywords must match
+                        score += int(match_ratio * 60)  # Max 60 points for keyword match
+                        logger.info(f"  Result #{idx+1}: Keyword match {matching_keywords} ({match_ratio:.0%})")
+                    else:
+                        # Very low keyword match - likely wrong company
+                        score += int(match_ratio * 20)  # Max 20 points
+                        logger.info(f"  Result #{idx+1}: LOW keyword match {matching_keywords} ({match_ratio:.0%})")
+
+            # Postal code matching (reliable for Singapore)
+            # BUT: reduce weight if it looks like a building (company might be IN the building)
             if postal_code and postal_code in result_address:
-                score += 80  # Strong location match
+                if is_building:
+                    score += 20  # Reduced weight for buildings at same address
+                    logger.info(f"  Result #{idx+1}: Postal match but looks like building")
+                else:
+                    score += 50  # Good location match (reduced from 80)
+
+            # Penalize building/hotel matches - these are often the ADDRESS, not the company
+            if is_building:
+                score -= 40
+                logger.info(f"  Result #{idx+1}: PENALTY - looks like building/hotel: {title}")
 
             # Has phone number (we want this)
             if result.get("phone"):
-                score += 20
+                score += 15
 
             # Has website (we want this)
             if result.get("website"):
-                score += 15
+                score += 10
 
             # Has rating (indicates established business)
             if result.get("rating"):
                 score += 5
 
-            logger.debug(f"Result #{idx+1}: '{result.get('title')}' - Score: {score}")
+            logger.info(f"Result #{idx+1}: '{title}' - Score: {score}")
 
             scored_results.append((score, result))
 
@@ -334,9 +378,14 @@ class GoogleMapsSearchService:
         # Get best match
         best_score, best_result = scored_results[0]
 
-        # Only accept if score is reasonable
-        if best_score < 20:
-            logger.warning(f"Best match score too low ({best_score}), may not be correct business")
+        # STRICTER threshold - must have score >= 70 to be considered a match
+        # This prevents accepting random businesses with low word overlap
+        MIN_MATCH_SCORE = 70
+
+        if best_score < MIN_MATCH_SCORE:
+            logger.warning(f"Best match score ({best_score}) below threshold ({MIN_MATCH_SCORE}), rejecting as likely wrong business")
+            logger.warning(f"  Would have matched: '{best_result.get('title')}'")
+            return {}
 
         # Log the match
         logger.info(f"Best match: '{best_result.get('title')}' (score: {best_score})")
@@ -353,10 +402,42 @@ class GoogleMapsSearchService:
             "reviews_count": best_result.get("reviews"),
             "place_id": best_result.get("place_id"),
             "gps_coordinates": best_result.get("gps_coordinates"),
-            "matched": best_score >= 50,
+            "matched": best_score >= 80,  # Higher threshold for "matched" flag
             "match_score": best_score,
             "source": "google_maps"
         }
+
+    def _extract_company_keywords(self, name: str) -> List[str]:
+        """Extract significant keywords from company name for matching."""
+        if not name:
+            return []
+
+        # Uppercase and clean
+        clean = name.upper()
+        clean = re.sub(r'[^\w\s]', ' ', clean)  # Remove punctuation
+        clean = re.sub(r'\s+', ' ', clean).strip()
+
+        # Remove common suffixes
+        suffixes = ['PTE', 'LTD', 'LIMITED', 'PRIVATE', 'SINGAPORE', 'SDN', 'BHD',
+                   'INC', 'LLC', 'CORP', 'CORPORATION', 'CO', 'COMPANY']
+        words = clean.split()
+        keywords = [w.lower() for w in words if len(w) >= 3 and w not in suffixes]
+
+        return keywords
+
+    def _clean_company_name(self, name: str) -> str:
+        """Remove common suffixes from company name for comparison."""
+        if not name:
+            return ""
+
+        clean = name.upper()
+        # Remove common suffixes in order of specificity
+        for suffix in [' PTE. LTD.', ' PTE LTD', ' PRIVATE LIMITED', ' LIMITED',
+                      ' PTE.', ' LTD.', ' LTD', ' PTE', ' (S)', ' (SINGAPORE)',
+                      ' CORPORATION', ' CORP', ' INC', ' LLC', ' SDN BHD', ' BHD']:
+            clean = clean.replace(suffix, '')
+
+        return clean.strip()
 
     def _clean_phone(self, phone: Optional[str]) -> Optional[str]:
         """Clean and normalize phone number"""

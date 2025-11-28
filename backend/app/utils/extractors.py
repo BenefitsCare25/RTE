@@ -52,13 +52,31 @@ class ContactExtractor:
         'mailchimp.com',
         'sendgrid.net',
         'mailgun.org',
-        # Placeholder/fake domains
+        # Placeholder/fake domains - these are template defaults, not real emails
         'email.com',
         'mail.com',
         'yourcompany.com',
         'company.com',
         'yourdomain.com',
         'sentry.local',
+        'sitename.com',              # Common placeholder in website templates
+        'yoursite.com',              # Common placeholder
+        'yourwebsite.com',           # Common placeholder
+        'mysite.com',                # Common placeholder
+        'mycompany.com',             # Common placeholder
+        'domain.com',                # Already in EXCLUDED_EMAIL_DOMAINS but adding here too
+        'placeholder.com',           # Generic placeholder
+        'abc.com',                   # Generic placeholder
+        'xyz.com',                   # Generic placeholder
+        'test.com',                  # Test domain (also in EXCLUDED_EMAIL_DOMAINS)
+        'example.org',               # Example domain
+        'example.net',               # Example domain
+        'sample.com',                # Sample domain
+        'demo.com',                  # Demo domain
+        'temp.com',                  # Temp domain
+        'fake.com',                  # Fake domain
+        'noreply.com',               # No-reply domain
+        'donotreply.com',            # Do not reply domain
     ]
 
     # Founder/director title patterns
