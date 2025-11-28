@@ -387,11 +387,24 @@ class GoogleMapsSearchService:
 
         website = website.strip()
 
+        # Handle Google redirect URLs: /url?q=https://actual-site.com/&opi=...
+        if website.startswith('/url?q='):
+            try:
+                from urllib.parse import parse_qs, urlparse as parse_redirect
+                # Extract the 'q' parameter which contains the actual URL
+                query_string = website.split('?', 1)[1] if '?' in website else ''
+                params = parse_qs(query_string)
+                if 'q' in params and params['q']:
+                    website = params['q'][0]
+                    logger.debug(f"Extracted actual URL from Google redirect: {website}")
+            except Exception as e:
+                logger.warning(f"Failed to parse Google redirect URL: {website}, error: {e}")
+
         # Ensure it has a scheme
         if not website.startswith(('http://', 'https://')):
             website = 'https://' + website
 
-        # Remove tracking parameters
+        # Remove tracking parameters (but preserve the main URL)
         if '?' in website:
             website = website.split('?')[0]
 
