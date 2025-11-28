@@ -486,11 +486,18 @@ class WebScraper:
             logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
 
             contacts = self.extractor.extract_all_contacts(main_page_content)
-            logger.info(f"Extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+            logger.info(f"Main page extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
 
-            # Try contact page if no data found
-            if not (contacts['phone'] or contacts['email']):
-                logger.info("No contact info on main page, searching for contact page...")
+            # Try contact page if EITHER phone OR email is missing
+            # This ensures we get complete contact info even if main page only has partial data
+            if not contacts['phone'] or not contacts['email']:
+                missing = []
+                if not contacts['phone']:
+                    missing.append('phone')
+                if not contacts['email']:
+                    missing.append('email')
+                logger.info(f"Missing {', '.join(missing)} on main page, searching for contact page...")
+
                 contact_page_url = await self._find_contact_page(page, website)
 
                 if contact_page_url:
@@ -501,8 +508,31 @@ class WebScraper:
                         await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
                         await asyncio.sleep(1)  # Wait for page to settle
                         contact_page_content = await page.content()
-                        contacts = self.extractor.extract_all_contacts(contact_page_content)
-                        logger.info(f"Contact page: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+                        contact_page_contacts = self.extractor.extract_all_contacts(contact_page_content)
+                        logger.info(f"Contact page extraction: Phones={contact_page_contacts.get('all_phones', [])}, Emails={contact_page_contacts.get('all_emails', [])}")
+
+                        # Merge contact page results with main page results
+                        # Only fill in missing data, don't overwrite existing
+                        if not contacts['phone'] and contact_page_contacts.get('phone'):
+                            contacts['phone'] = contact_page_contacts['phone']
+                            logger.info(f"Got phone from contact page: {contacts['phone']}")
+                        if not contacts['email'] and contact_page_contacts.get('email'):
+                            contacts['email'] = contact_page_contacts['email']
+                            logger.info(f"Got email from contact page: {contacts['email']}")
+
+                        # Merge all_phones and all_emails lists
+                        existing_phones = set(contacts.get('all_phones', []))
+                        for phone in contact_page_contacts.get('all_phones', []):
+                            if phone and phone not in existing_phones:
+                                contacts.setdefault('all_phones', []).append(phone)
+                                existing_phones.add(phone)
+
+                        existing_emails = set(contacts.get('all_emails', []))
+                        for email in contact_page_contacts.get('all_emails', []):
+                            if email and email not in existing_emails:
+                                contacts.setdefault('all_emails', []).append(email)
+                                existing_emails.add(email)
+
                     except Exception as e:
                         logger.warning(f"Failed to load contact page {contact_page_url}: {e}")
 
