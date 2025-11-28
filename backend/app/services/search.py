@@ -34,6 +34,8 @@ DIRECTORY_DOMAINS = [
     'recordowl.com',
     'sg.ltddir.com',
     'ltddir.com',
+    'keepital.com',        # Business contact directory
+    'soopage.com',         # Singapore business directory
     # Singapore company directories (added)
     'sgpgrid.com',
     'scam.sg',
@@ -46,6 +48,7 @@ DIRECTORY_DOMAINS = [
     'bloomberg.com',
     'yelp.com',
     'yellowpages.com',
+    'rocketreach.co',      # Contact lookup directory
     # Trade/business directories
     'volza.com',
     'inriskable.com',
@@ -67,12 +70,25 @@ DIRECTORY_DOMAINS = [
     'researchgate.net',
     'dokumen.pub',
     'issuu.com',
+    # Marketplaces (NOT company websites)
+    'ebay.com',
+    'amazon.com',
+    'lazada.sg',
+    'shopee.sg',
+    'carousell.com',
+    'qoo10.sg',
+    # Press release / news aggregators (NOT company websites)
+    'mynewsdesk.com',
+    'prnewswire.com',
+    'businesswire.com',
     # Archive/library/government (no company contacts)
     'archive.org',
     'nlb.gov.sg',
     'eresources.nlb.gov.sg',
     'fraser.stlouisfed.org',
     'evols.library.manoa.hawaii.edu',
+    'nas.gov.sg',          # National Archives - no company contacts
+    'gov.sg',              # Government sites generally
 ]
 
 # Sites that typically work well without heavy protection
@@ -288,12 +304,15 @@ class SearchService:
         Returns list of query strategies in priority order.
         """
         # Clean company name - remove common suffixes for cleaner search
+        # IMPORTANT: Order matters! Remove longer patterns FIRST to avoid partial matches
+        # e.g., "CORPORATION" must be removed before "CORP" otherwise you get "ORATION" left over
         clean_name = company_name
-        for suffix in [' PTE LTD', ' PTE. LTD.', ' PRIVATE LIMITED', ' LIMITED', ' LTD', ' LTD.',
-                       ' PTE', ' SINGAPORE', ' (S)', ' (SINGAPORE)', ' CORP', ' CORPORATION',
-                       ' HOLDINGS', ' ENTERPRISES', ' SERVICES', ' TRADING', ' INTERNATIONAL']:
+        for suffix in [' PTE. LTD.', ' PTE LTD', ' PRIVATE LIMITED', ' LIMITED', ' LTD.', ' LTD',
+                       ' CORPORATION', ' CORP',  # CORPORATION before CORP - critical!
+                       ' (SINGAPORE)', ' (S)', ' SINGAPORE',  # (SINGAPORE) before (S)
+                       ' PTE', ' HOLDINGS', ' ENTERPRISES', ' SERVICES', ' TRADING', ' INTERNATIONAL']:
             clean_name = clean_name.replace(suffix, '').replace(suffix.lower(), '').replace(suffix.title(), '')
-        clean_name = clean_name.strip()
+        clean_name = re.sub(r'\s+', ' ', clean_name).strip()  # Clean up extra spaces
 
         # Extract postal code from address if available
         postal_match = re.search(r'Singapore\s*(\d{6})', address, re.IGNORECASE)
