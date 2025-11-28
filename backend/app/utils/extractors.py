@@ -31,6 +31,36 @@ class ContactExtractor:
         'bizfile.gov.sg', 'acra.gov.sg'
     ]
 
+    # Platform/system emails to exclude (internal tracking, not real contacts)
+    # These are auto-generated emails embedded by website platforms
+    PLATFORM_EMAIL_DOMAINS = [
+        # Wix platform
+        'sentry.wixpress.com',      # Wix error tracking/Sentry integration
+        'wix.com',                   # Wix internal
+        'wixpress.com',              # Wix platform emails
+        # Other website platforms
+        'sentry.io',                 # Sentry error tracking
+        'squarespace.com',           # Squarespace internal
+        'shopify.com',               # Shopify internal
+        'wordpress.com',             # WordPress.com internal
+        'weebly.com',                # Weebly internal
+        'godaddy.com',               # GoDaddy internal
+        'webflow.io',                # Webflow internal
+        # Analytics/tracking
+        'google-analytics.com',
+        'googlemail.com',
+        'mailchimp.com',
+        'sendgrid.net',
+        'mailgun.org',
+        # Placeholder/fake domains
+        'email.com',
+        'mail.com',
+        'yourcompany.com',
+        'company.com',
+        'yourdomain.com',
+        'sentry.local',
+    ]
+
     # Founder/director title patterns
     FOUNDER_TITLES = [
         r'(?:founder|co-founder|cofounder)',
@@ -136,13 +166,34 @@ class ContactExtractor:
         matches = re.findall(ContactExtractor.EMAIL_PATTERN, text, re.IGNORECASE)
         emails = list(set(matches))
 
-        # Filter out directory/aggregator site emails entirely
+        # Filter out directory/aggregator site emails and platform/system emails
         # These are never the company's real email
         filtered_emails = []
         for email in emails:
-            domain = email.split('@')[1].lower()
-            if domain not in ContactExtractor.DIRECTORY_EMAIL_DOMAINS:
-                filtered_emails.append(email)
+            email_lower = email.lower()
+            domain = email_lower.split('@')[1]
+
+            # Skip directory emails
+            if domain in ContactExtractor.DIRECTORY_EMAIL_DOMAINS:
+                continue
+
+            # Skip platform/system emails (check if domain ends with any platform domain)
+            is_platform_email = False
+            for platform_domain in ContactExtractor.PLATFORM_EMAIL_DOMAINS:
+                if domain == platform_domain or domain.endswith('.' + platform_domain):
+                    is_platform_email = True
+                    break
+
+            if is_platform_email:
+                continue
+
+            # Skip emails that look like hashes/tracking IDs (common in Sentry, etc.)
+            # Pattern: 20+ character hexadecimal string before @
+            local_part = email_lower.split('@')[0]
+            if len(local_part) >= 20 and re.match(r'^[a-f0-9]+$', local_part):
+                continue
+
+            filtered_emails.append(email)
 
         emails = filtered_emails
 
