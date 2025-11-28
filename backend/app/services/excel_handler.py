@@ -128,6 +128,7 @@ class ExcelHandler:
                 'phone_3',
                 'email',
                 'website',
+                'discovered_urls',
                 'status'
             ]
 
@@ -153,6 +154,7 @@ class ExcelHandler:
                 'Phone 3',
                 'Email Address',
                 'Company Website',
+                'Discovered URLs',
                 'Enrichment Status'
             ]
 

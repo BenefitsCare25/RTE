@@ -81,7 +81,7 @@ class SearchService:
         company_name: str,
         uen: str,
         address: str
-    ) -> List[str]:
+    ) -> Dict[str, List[str]]:
         """
         Search for company websites using API search (SerpAPI or Bing)
         Returns multiple websites to maximize data extraction success
@@ -92,38 +92,49 @@ class SearchService:
             address: Company address
 
         Returns:
-            List of company website URLs (up to 5), empty list if none found
+            Dictionary with:
+                - 'company_websites': List of actual company website URLs to scrape
+                - 'all_discovered': List of ALL websites found (including directories)
         """
         logger.info(f"Starting website search for: {company_name} (UEN: {uen})")
+
+        result = {
+            'company_websites': [],
+            'all_discovered': []
+        }
 
         # Try SerpAPI first
         if self.serpapi_key:
             logger.info("Using SerpAPI to find company websites...")
-            websites = await self._search_with_serpapi(company_name, uen)
-            if websites:
-                logger.info(f"✓ Found {len(websites)} websites via SerpAPI: {websites}")
-                return websites
-            else:
-                logger.warning("SerpAPI search returned no results")
+            search_result = await self._search_with_serpapi(company_name, uen)
+            if search_result:
+                result = search_result
+                logger.info(f"✓ Found {len(result['company_websites'])} company websites, {len(result['all_discovered'])} total discovered")
+                if result['company_websites']:
+                    return result
 
         # Fallback to Bing if SerpAPI fails or unavailable
         if self.bing_key:
             logger.info("Falling back to Bing Search API...")
-            websites = await self._search_with_bing(company_name, uen)
-            if websites:
-                logger.info(f"✓ Found {len(websites)} websites via Bing: {websites}")
-                return websites
-            else:
-                logger.warning("Bing search returned no results")
+            search_result = await self._search_with_bing(company_name, uen)
+            if search_result:
+                # Merge all_discovered from both searches
+                result['all_discovered'].extend([url for url in search_result.get('all_discovered', []) if url not in result['all_discovered']])
+                if search_result.get('company_websites'):
+                    result['company_websites'] = search_result['company_websites']
+                    logger.info(f"✓ Found {len(result['company_websites'])} company websites via Bing")
+                    return result
 
-        logger.error(f"Failed to find websites for {company_name} - no search API keys configured or no results found")
-        return []
+        if not result['company_websites']:
+            logger.warning(f"No company websites found for {company_name} (discovered {len(result['all_discovered'])} directory sites)")
+
+        return result
 
     async def _search_with_serpapi(
         self,
         company_name: str,
         uen: str
-    ) -> List[str]:
+    ) -> Dict[str, List[str]]:
         """
         Search using SerpAPI (Google Custom Search)
 
@@ -132,7 +143,7 @@ class SearchService:
             uen: UEN number
 
         Returns:
-            List of website URLs (up to 5)
+            Dictionary with 'company_websites' and 'all_discovered' lists
         """
         try:
             query = f"{company_name} Singapore UEN {uen}"
@@ -159,13 +170,13 @@ class SearchService:
         except Exception as e:
             logger.error(f"SerpAPI search error: {str(e)}")
 
-        return []
+        return {'company_websites': [], 'all_discovered': []}
 
     async def _search_with_bing(
         self,
         company_name: str,
         uen: str
-    ) -> List[str]:
+    ) -> Dict[str, List[str]]:
         """
         Search using Bing Search API
 
@@ -174,7 +185,7 @@ class SearchService:
             uen: UEN number
 
         Returns:
-            List of website URLs (up to 5)
+            Dictionary with 'company_websites' and 'all_discovered' lists
         """
         try:
             query = f"{company_name} Singapore UEN {uen}"
@@ -203,7 +214,7 @@ class SearchService:
         except Exception as e:
             logger.error(f"Bing search error: {str(e)}")
 
-        return []
+        return {'company_websites': [], 'all_discovered': []}
 
     def _classify_url(self, url: str) -> Tuple[str, int]:
         """
@@ -244,19 +255,19 @@ class SearchService:
         self,
         data: Dict[str, Any],
         company_name: str
-    ) -> List[str]:
+    ) -> Dict[str, List[str]]:
         """
-        Extract website URLs from SerpAPI results - ONLY company websites.
-
-        NEW BEHAVIOR: Only returns actual company domain websites.
-        All directory sites (yellowpages, sgpbusiness, etc.) are EXCLUDED.
+        Extract website URLs from SerpAPI results - ONLY company websites for scraping.
+        Also returns ALL discovered URLs for reference.
 
         Args:
             data: SerpAPI response data
             company_name: Company name for validation
 
         Returns:
-            List of company website URLs (directories excluded)
+            Dictionary with:
+                - 'company_websites': List of company websites to scrape
+                - 'all_discovered': List of ALL URLs found (including directories)
         """
         organic_results = data.get("organic_results", [])
 
@@ -266,7 +277,8 @@ class SearchService:
         logger.info(f"FILTER: Only accepting actual company websites, excluding all directories")
         logger.info(f"{'='*80}")
 
-        # Only categorize company websites now
+        # Track all discovered URLs and company websites separately
+        all_discovered = []
         categorized = {
             'company_with_match': [],    # Priority 1: Own website + name match
             'company_no_match': [],      # Priority 2: Own website, no name match
@@ -281,6 +293,12 @@ class SearchService:
             logger.info(f"  Title: {title}")
             logger.info(f"  URL:   {url}")
 
+            cleaned_url = self._clean_url(url)
+
+            # Add ALL URLs to all_discovered (for reference column)
+            if cleaned_url and cleaned_url not in all_discovered:
+                all_discovered.append(cleaned_url)
+
             # Check if excluded (social media, etc.)
             if any(domain in url for domain in EXCLUDED_DOMAINS):
                 excluded_domain = next(domain for domain in EXCLUDED_DOMAINS if domain in url)
@@ -288,7 +306,6 @@ class SearchService:
                 excluded_count += 1
                 continue
 
-            cleaned_url = self._clean_url(url)
             classification, priority = self._classify_url(url)
 
             # Skip any non-company-website results (directories get priority 99)
@@ -326,6 +343,7 @@ class SearchService:
         logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
         logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
         logger.info(f"  - Excluded (directories/social): {excluded_count}")
+        logger.info(f"  - Total discovered URLs: {len(all_discovered)}")
         logger.info(f"{'-'*80}")
 
         selected_websites = []
@@ -346,17 +364,19 @@ class SearchService:
             logger.info("NO company websites found - fallback will return empty")
         logger.info(f"{'='*80}")
 
-        return selected_websites
+        return {
+            'company_websites': selected_websites,
+            'all_discovered': all_discovered
+        }
 
     def _extract_websites_from_bing(
         self,
         data: Dict[str, Any],
         company_name: str
-    ) -> List[str]:
+    ) -> Dict[str, List[str]]:
         """
         Extract website URLs from Bing search results - ONLY company websites.
-
-        NEW BEHAVIOR: Only returns actual company domain websites.
+        Also returns ALL discovered URLs for reference.
         All directory sites are EXCLUDED.
 
         Args:
@@ -364,7 +384,7 @@ class SearchService:
             company_name: Company name for validation
 
         Returns:
-            List of company website URLs (directories excluded)
+            Dictionary with 'company_websites' and 'all_discovered' lists
         """
         web_pages = data.get("webPages", {}).get("value", [])
 
@@ -374,7 +394,8 @@ class SearchService:
         logger.info(f"FILTER: Only accepting actual company websites, excluding all directories")
         logger.info(f"{'='*80}")
 
-        # Only categorize company websites
+        # Track all discovered URLs and company websites separately
+        all_discovered = []
         categorized = {
             'company_with_match': [],
             'company_no_match': [],
@@ -389,6 +410,12 @@ class SearchService:
             logger.info(f"  Title: {title}")
             logger.info(f"  URL:   {url}")
 
+            cleaned_url = self._clean_url(url)
+
+            # Add ALL URLs to all_discovered (for reference column)
+            if cleaned_url and cleaned_url not in all_discovered:
+                all_discovered.append(cleaned_url)
+
             # Check if excluded (social media, etc.)
             if any(domain in url for domain in EXCLUDED_DOMAINS):
                 excluded_domain = next(domain for domain in EXCLUDED_DOMAINS if domain in url)
@@ -396,7 +423,6 @@ class SearchService:
                 excluded_count += 1
                 continue
 
-            cleaned_url = self._clean_url(url)
             classification, priority = self._classify_url(url)
 
             # Skip any non-company-website results (directories get priority 99)
@@ -434,6 +460,7 @@ class SearchService:
         logger.info(f"  - Company websites with name match: {len(categorized['company_with_match'])}")
         logger.info(f"  - Company websites without name match: {len(categorized['company_no_match'])}")
         logger.info(f"  - Excluded (directories/social): {excluded_count}")
+        logger.info(f"  - Total discovered URLs: {len(all_discovered)}")
         logger.info(f"{'-'*80}")
 
         selected_websites = []
@@ -451,7 +478,11 @@ class SearchService:
             logger.info(f"TOTAL SELECTED: {len(selected_websites)} company website(s) from Bing")
         else:
             logger.info("NO company websites found from Bing - fallback will return empty")
-        return selected_websites
+
+        return {
+            'company_websites': selected_websites,
+            'all_discovered': all_discovered
+        }
 
     @staticmethod
     def _clean_url(url: str) -> str:

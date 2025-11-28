@@ -553,17 +553,26 @@ async def enrich_single_company(
     # ============================================
     # STEP 3: Fallback to Web Search if needed
     # ============================================
+    # Track all discovered URLs from web search (including directories) for reference
+    all_discovered_urls = []
+
     if not phone and not website:
         logger.info(f"Step 3: Fallback to web search for {company['name']}")
 
-        websites = await search_service.search_company_websites(
+        search_result = await search_service.search_company_websites(
             company['name'],
             company['uen'],
             company['address']
         )
 
+        # Extract company websites (for scraping) and all discovered URLs (for reference)
+        websites = search_result.get('company_websites', [])
+        all_discovered_urls = search_result.get('all_discovered', [])
+
+        logger.info(f"Web search: {len(websites)} company websites, {len(all_discovered_urls)} total discovered")
+
         if websites:
-            logger.info(f"Found {len(websites)} websites via web search")
+            logger.info(f"Found {len(websites)} company websites to scrape")
 
             # Scrape websites until we have phone + email
             all_contacts = []
@@ -666,5 +675,6 @@ async def enrich_single_company(
         'phone_3': all_phones[2] if len(all_phones) > 2 else '',
         'email': email or '',
         'website': website or '',
+        'discovered_urls': '\n'.join(all_discovered_urls) if all_discovered_urls else '',
         'status': status
     }
