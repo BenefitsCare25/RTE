@@ -15,6 +15,9 @@ playwright-stealth==1.0.6
 # HTTP client
 httpx==0.26.0
 
+# SerpAPI for LinkedIn search
+google-search-results==2.4.2
+
 # Environment variables
 python-dotenv==1.0.0
 
