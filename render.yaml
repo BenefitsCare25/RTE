@@ -3,6 +3,7 @@ services:
     name: company-enrichment-api
     env: docker
     region: oregon
+    plan: standard  # Required for Playwright memory requirements
     rootDir: backend
     dockerfilePath: ./Dockerfile
     envVars:
@@ -18,3 +19,5 @@ services:
         value: production
       - key: FLARESOLVERR_URL
         sync: false
+      - key: WEB_MEMORY
+        value: 2048  # 2GB memory limit for Playwright

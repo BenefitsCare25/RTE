@@ -52,6 +52,10 @@ CLOUDFLARE_INDICATORS = [
     'attention required',
 ]
 
+# Memory management limits
+MAX_CONCURRENT_CONTEXTS = 2  # Limit concurrent browser contexts to prevent memory exhaustion
+MAX_COOKIE_CACHE_SIZE = 50  # Clear cookie cache when it exceeds this size
+
 
 class WebScraper:
     """
@@ -70,6 +74,10 @@ class WebScraper:
         self._request_count = 0
         self._session_cookies: Dict[str, List] = {}  # Store cookies per domain
 
+        # Memory management
+        self._active_contexts = 0
+        self._context_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CONTEXTS)
+
         # Proxy configuration
         self.proxy_server = os.getenv("PROXY_SERVER")
         self.proxy_username = os.getenv("PROXY_USERNAME")
@@ -87,6 +95,12 @@ class WebScraper:
             proxy_config["username"] = self.proxy_username
             proxy_config["password"] = self.proxy_password
         return proxy_config
+
+    def _cleanup_cookie_cache(self):
+        """Clear cookie cache if it exceeds maximum size to prevent memory bloat"""
+        if len(self._session_cookies) > MAX_COOKIE_CACHE_SIZE:
+            logger.info(f"Cookie cache size ({len(self._session_cookies)}) exceeded limit ({MAX_COOKIE_CACHE_SIZE}), clearing cache")
+            self._session_cookies.clear()
 
     async def initialize(self):
         """Initialize Playwright browser with anti-detection features"""
@@ -366,21 +380,28 @@ class WebScraper:
         3. Cookie persistence for retry
         4. FlareSolverr fallback
         5. Smart retry logic
+        6. Memory-limited concurrent contexts
         """
         max_retries = 1  # One retry with different approach
 
-        try:
-            await self.initialize()
-            self._request_count += 1
-            logger.info(f"Scraping: {website} (request #{self._request_count}, attempt {retry_count + 1})")
+        # Limit concurrent browser contexts to prevent memory exhaustion
+        async with self._context_semaphore:
+            try:
+                await self.initialize()
+                self._request_count += 1
+                self._active_contexts += 1
+                logger.info(f"Scraping: {website} (request #{self._request_count}, attempt {retry_count + 1}, active contexts: {self._active_contexts})")
 
-            # Rotate user agent and viewport
-            user_agent = random.choice(USER_AGENTS)
-            viewport = random.choice(VIEWPORTS)
-            domain = await self._get_domain(website)
+                # Clean up cookie cache if it's getting too large
+                self._cleanup_cookie_cache()
 
-            # Create browser context with stealth settings
-            context = await self.browser.new_context(
+                # Rotate user agent and viewport
+                user_agent = random.choice(USER_AGENTS)
+                viewport = random.choice(VIEWPORTS)
+                domain = await self._get_domain(website)
+
+                # Create browser context with stealth settings
+                context = await self.browser.new_context(
                 user_agent=user_agent,
                 viewport=viewport,
                 locale='en-SG',
@@ -453,7 +474,10 @@ class WebScraper:
                     self._session_cookies[domain] = cookies
                     logger.info(f"Saved {len(cookies)} cookies for potential retry")
 
+                # Force cleanup of browser context
                 await context.close()
+                self._active_contexts -= 1
+                del context
 
                 # Retry with FlareSolverr if available
                 if self.flaresolverr_url:
@@ -536,19 +560,24 @@ class WebScraper:
                     except Exception as e:
                         logger.warning(f"Failed to load contact page {contact_page_url}: {e}")
 
-            await context.close()
+                # Force cleanup of browser context
+                await context.close()
+                self._active_contexts -= 1
+                del context
 
-            return {
-                'phone': contacts['phone'],
-                'email': contacts['email'],
-                'website': website,
-                'all_phones': contacts.get('all_phones', []),
-                'all_emails': contacts.get('all_emails', []),
-                'blocked': False
-            }
+                return {
+                    'phone': contacts['phone'],
+                    'email': contacts['email'],
+                    'website': website,
+                    'all_phones': contacts.get('all_phones', []),
+                    'all_emails': contacts.get('all_emails', []),
+                    'blocked': False
+                }
 
-        except Exception as e:
-            logger.error(f"Scraping error for {website}: {str(e)}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Scraping error for {website}: {str(e)}", exc_info=True)
+                # Ensure context is cleaned up on error
+                self._active_contexts -= 1
 
             # Try FlareSolverr as last resort on error
             if self.flaresolverr_url and retry_count == 0:
@@ -609,6 +638,7 @@ class WebScraper:
         This is a lighter-weight scrape that focuses on:
         1. Main page email extraction
         2. Contact page email extraction
+        3. Memory-limited concurrent contexts
 
         Args:
             website: Company website URL
@@ -616,18 +646,24 @@ class WebScraper:
         Returns:
             Primary email address if found, None otherwise
         """
-        try:
-            await self.initialize()
-            self._request_count += 1
-            logger.info(f"Scraping for email only: {website}")
+        # Limit concurrent browser contexts to prevent memory exhaustion
+        async with self._context_semaphore:
+            try:
+                await self.initialize()
+                self._request_count += 1
+                self._active_contexts += 1
+                logger.info(f"Scraping for email only: {website} (active contexts: {self._active_contexts})")
 
-            # Rotate user agent and viewport
-            user_agent = random.choice(USER_AGENTS)
-            viewport = random.choice(VIEWPORTS)
-            domain = await self._get_domain(website)
+                # Clean up cookie cache if it's getting too large
+                self._cleanup_cookie_cache()
 
-            # Create browser context
-            context = await self.browser.new_context(
+                # Rotate user agent and viewport
+                user_agent = random.choice(USER_AGENTS)
+                viewport = random.choice(VIEWPORTS)
+                domain = await self._get_domain(website)
+
+                # Create browser context
+                context = await self.browser.new_context(
                 user_agent=user_agent,
                 viewport=viewport,
                 locale='en-SG',
@@ -656,71 +692,84 @@ class WebScraper:
             if self._request_count > 1:
                 await asyncio.sleep(random.uniform(1.0, 2.5))
 
-            # Navigate to main page
-            await page.goto(website, wait_until='domcontentloaded', timeout=0)
-            await self._simulate_human_behavior(page)
+                # Navigate to main page
+                await page.goto(website, wait_until='domcontentloaded', timeout=0)
+                await self._simulate_human_behavior(page)
 
-            # Wait for Cloudflare
-            page_accessible = await self._wait_for_cloudflare(page, max_wait=15)
+                # Wait for Cloudflare
+                page_accessible = await self._wait_for_cloudflare(page, max_wait=15)
 
-            if not page_accessible:
-                logger.warning(f"Email scrape blocked for {website}")
+                if not page_accessible:
+                    logger.warning(f"Email scrape blocked for {website}")
+                    await context.close()
+                    self._active_contexts -= 1
+                    del context
+                    return None
+
+                # Extract emails from main page
+                main_content = await page.content()
+                contacts = self.extractor.extract_all_contacts(main_content)
+
+                if contacts.get('email'):
+                    logger.info(f"Found email on main page: {contacts['email']}")
+                    await context.close()
+                    self._active_contexts -= 1
+                    del context
+                    return contacts['email']
+
+                # Try contact page
+                contact_page_url = await self._find_contact_page(page, website)
+                if contact_page_url:
+                    logger.info(f"Checking contact page for email: {contact_page_url}")
+                    try:
+                        await asyncio.sleep(random.uniform(0.5, 1.5))
+                        await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
+                        contact_content = await page.content()
+                        contacts = self.extractor.extract_all_contacts(contact_content)
+
+                        if contacts.get('email'):
+                            logger.info(f"Found email on contact page: {contacts['email']}")
+                            await context.close()
+                            self._active_contexts -= 1
+                            del context
+                            return contacts['email']
+                    except Exception as e:
+                        logger.warning(f"Failed to load contact page: {e}")
+
+                # Try common contact page patterns
+                common_patterns = ['/contact', '/contact-us', '/about', '/about-us']
+                from urllib.parse import urlparse, urljoin
+
+                for pattern in common_patterns:
+                    try:
+                        test_url = urljoin(website, pattern)
+                        if test_url != contact_page_url:  # Don't retry same page
+                            await asyncio.sleep(random.uniform(0.5, 1.0))
+                            response = await page.goto(test_url, wait_until='domcontentloaded', timeout=15000)
+                            if response and response.ok:
+                                pattern_content = await page.content()
+                                contacts = self.extractor.extract_all_contacts(pattern_content)
+                                if contacts.get('email'):
+                                    logger.info(f"Found email at {pattern}: {contacts['email']}")
+                                    await context.close()
+                                    self._active_contexts -= 1
+                                    del context
+                                    return contacts['email']
+                    except:
+                        continue
+
+                # Force cleanup of browser context
                 await context.close()
+                self._active_contexts -= 1
+                del context
+                logger.info(f"No email found on {website}")
                 return None
 
-            # Extract emails from main page
-            main_content = await page.content()
-            contacts = self.extractor.extract_all_contacts(main_content)
-
-            if contacts.get('email'):
-                logger.info(f"Found email on main page: {contacts['email']}")
-                await context.close()
-                return contacts['email']
-
-            # Try contact page
-            contact_page_url = await self._find_contact_page(page, website)
-            if contact_page_url:
-                logger.info(f"Checking contact page for email: {contact_page_url}")
-                try:
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                    await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
-                    contact_content = await page.content()
-                    contacts = self.extractor.extract_all_contacts(contact_content)
-
-                    if contacts.get('email'):
-                        logger.info(f"Found email on contact page: {contacts['email']}")
-                        await context.close()
-                        return contacts['email']
-                except Exception as e:
-                    logger.warning(f"Failed to load contact page: {e}")
-
-            # Try common contact page patterns
-            common_patterns = ['/contact', '/contact-us', '/about', '/about-us']
-            from urllib.parse import urlparse, urljoin
-
-            for pattern in common_patterns:
-                try:
-                    test_url = urljoin(website, pattern)
-                    if test_url != contact_page_url:  # Don't retry same page
-                        await asyncio.sleep(random.uniform(0.5, 1.0))
-                        response = await page.goto(test_url, wait_until='domcontentloaded', timeout=15000)
-                        if response and response.ok:
-                            pattern_content = await page.content()
-                            contacts = self.extractor.extract_all_contacts(pattern_content)
-                            if contacts.get('email'):
-                                logger.info(f"Found email at {pattern}: {contacts['email']}")
-                                await context.close()
-                                return contacts['email']
-                except:
-                    continue
-
-            await context.close()
-            logger.info(f"No email found on {website}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Email scrape error for {website}: {str(e)}")
-            return None
+            except Exception as e:
+                logger.error(f"Email scrape error for {website}: {str(e)}")
+                # Ensure context is cleaned up on error
+                self._active_contexts -= 1
+                return None
 
     async def scrape_multiple_companies(
         self,
