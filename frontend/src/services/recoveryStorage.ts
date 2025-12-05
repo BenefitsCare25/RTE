@@ -12,6 +12,16 @@ export interface EnrichedCompany {
   phone_3: string;
   email: string;
   website: string;
+  // Decision maker fields
+  dm1_name: string;
+  dm1_title: string;
+  dm1_linkedin: string;
+  dm2_name: string;
+  dm2_title: string;
+  dm2_linkedin: string;
+  dm3_name: string;
+  dm3_title: string;
+  dm3_linkedin: string;
   status: string;
 }
 

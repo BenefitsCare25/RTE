@@ -23,6 +23,16 @@ export function generateExcelBlob(companies: EnrichedCompany[], _filename: strin
     'Phone 3': c.phone_3,
     'Email Address': c.email,
     'Website(s)': c.website,
+    // Decision maker columns
+    'Decision Maker 1 - Name': c.dm1_name,
+    'Decision Maker 1 - Title': c.dm1_title,
+    'Decision Maker 1 - LinkedIn': c.dm1_linkedin,
+    'Decision Maker 2 - Name': c.dm2_name,
+    'Decision Maker 2 - Title': c.dm2_title,
+    'Decision Maker 2 - LinkedIn': c.dm2_linkedin,
+    'Decision Maker 3 - Name': c.dm3_name,
+    'Decision Maker 3 - Title': c.dm3_title,
+    'Decision Maker 3 - LinkedIn': c.dm3_linkedin,
     'Enrichment Status': c.status,
   }));
 
@@ -39,6 +49,16 @@ export function generateExcelBlob(companies: EnrichedCompany[], _filename: strin
     { wch: 15 }, // Phone 3
     { wch: 30 }, // Email Address
     { wch: 40 }, // Website(s)
+    // Decision maker columns
+    { wch: 25 }, // Decision Maker 1 - Name
+    { wch: 30 }, // Decision Maker 1 - Title
+    { wch: 50 }, // Decision Maker 1 - LinkedIn
+    { wch: 25 }, // Decision Maker 2 - Name
+    { wch: 30 }, // Decision Maker 2 - Title
+    { wch: 50 }, // Decision Maker 2 - LinkedIn
+    { wch: 25 }, // Decision Maker 3 - Name
+    { wch: 30 }, // Decision Maker 3 - Title
+    { wch: 50 }, // Decision Maker 3 - LinkedIn
     { wch: 40 }, // Enrichment Status
   ];
 

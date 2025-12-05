@@ -6,6 +6,7 @@ from app.services.search import SearchService
 from app.services.scraper import WebScraper
 from app.services.sg_data_api import SGDataAPIService
 from app.services.google_maps_search import GoogleMapsSearchService
+from app.services.linkedin_search import LinkedInSearchService
 import asyncio
 import logging
 import json
@@ -62,11 +63,12 @@ async def enrich_companies(file: UploadFile = File(...)):
             )
 
         # Initialize services
-        logger.info("Initializing search, scraper, API, and Google Maps services")
+        logger.info("Initializing search, scraper, API, Google Maps, and LinkedIn services")
         search_service = SearchService()
         scraper = WebScraper()
         api_service = SGDataAPIService()
         maps_service = GoogleMapsSearchService()
+        linkedin_service = LinkedInSearchService()
 
         # Enrich companies
         logger.info(f"Starting enrichment process for {len(companies)} companies")
@@ -75,7 +77,8 @@ async def enrich_companies(file: UploadFile = File(...)):
             search_service,
             scraper,
             api_service,
-            maps_service
+            maps_service,
+            linkedin_service
         )
 
         # Close scraper
@@ -109,7 +112,8 @@ async def enrich_company_data(
     search_service: SearchService,
     scraper: WebScraper,
     api_service: SGDataAPIService,
-    maps_service: GoogleMapsSearchService = None
+    maps_service: GoogleMapsSearchService = None,
+    linkedin_service: LinkedInSearchService = None
 ) -> List[Dict]:
     """
     Enrich company data with contact information using Google Maps as primary source.
@@ -118,6 +122,7 @@ async def enrich_company_data(
     1. Google Maps search (primary) - uses company name + address/postal code
     2. Web search + scraping (fallback) - if Maps fails
     3. API fallback (last resort)
+    4. LinkedIn decision maker search
 
     Args:
         companies: List of company dictionaries
@@ -125,6 +130,7 @@ async def enrich_company_data(
         scraper: Web scraper instance
         api_service: Singapore data API service instance
         maps_service: Google Maps search service instance
+        linkedin_service: LinkedIn search service instance
 
     Returns:
         List of enriched company dictionaries
@@ -140,7 +146,8 @@ async def enrich_company_data(
                 api_service,
                 idx - 1,  # 0-based index
                 len(companies),
-                maps_service
+                maps_service,
+                linkedin_service
             )
             enriched.append(enriched_company)
 
@@ -155,6 +162,16 @@ async def enrich_company_data(
                 'phone_3': '',
                 'email': '',
                 'website': '',
+                'discovered_urls': '',
+                'dm1_name': '',
+                'dm1_title': '',
+                'dm1_linkedin': '',
+                'dm2_name': '',
+                'dm2_title': '',
+                'dm2_linkedin': '',
+                'dm3_name': '',
+                'dm3_title': '',
+                'dm3_linkedin': '',
                 'status': f'Error: {str(e)}'
             })
 
@@ -384,6 +401,7 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
         scraper = WebScraper()
         api_service = SGDataAPIService()
         maps_service = GoogleMapsSearchService()
+        linkedin_service = LinkedInSearchService()
         logger.info("All services initialized")
 
         try:
@@ -410,7 +428,8 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
                         api_service,
                         idx,
                         len(companies),
-                        maps_service
+                        maps_service,
+                        linkedin_service
                     )
 
                     yield {
@@ -441,6 +460,15 @@ async def enrich_companies_stream(file: UploadFile = File(...)):
                                 "phone_3": "",
                                 "email": "",
                                 "website": "",
+                                "dm1_name": "",
+                                "dm1_title": "",
+                                "dm1_linkedin": "",
+                                "dm2_name": "",
+                                "dm2_title": "",
+                                "dm2_linkedin": "",
+                                "dm3_name": "",
+                                "dm3_title": "",
+                                "dm3_linkedin": "",
                                 "status": f"Error: {str(e)}"
                             }
                         })
@@ -478,7 +506,8 @@ async def enrich_single_company(
     api_service: SGDataAPIService,
     idx: int,
     total: int,
-    maps_service: GoogleMapsSearchService = None
+    maps_service: GoogleMapsSearchService = None,
+    linkedin_service: LinkedInSearchService = None
 ) -> Dict:
     """
     Enrich a single company with contact information.
@@ -488,6 +517,7 @@ async def enrich_single_company(
     2. Get phone and website directly from Maps result
     3. If website found, scrape it for email only
     4. Fallback to web search if Maps fails
+    5. Search LinkedIn for decision makers (C-Suite, HR, Founders)
 
     Args:
         company: Company dictionary with name, uen, address
@@ -497,6 +527,7 @@ async def enrich_single_company(
         idx: Current company index (0-based)
         total: Total number of companies
         maps_service: Google Maps search service instance
+        linkedin_service: LinkedIn search service instance
 
     Returns:
         Enriched company dictionary
@@ -667,6 +698,24 @@ async def enrich_single_company(
                 website = api_result['registry_url']
 
     # ============================================
+    # STEP 5: LinkedIn Decision Maker Search
+    # ============================================
+    decision_makers = []
+    if linkedin_service:
+        logger.info(f"Step 5: Searching LinkedIn for decision makers")
+        try:
+            decision_makers = await linkedin_service.find_decision_makers(
+                company['name'],
+                max_results=3
+            )
+
+            if decision_makers:
+                logger.info(f"Found {len(decision_makers)} decision makers")
+                status_parts.append(f'{len(decision_makers)} decision makers found')
+        except Exception as e:
+            logger.warning(f"LinkedIn search failed: {str(e)}")
+
+    # ============================================
     # BUILD FINAL RESULT
     # ============================================
     has_data = bool(phone or email)
@@ -690,5 +739,15 @@ async def enrich_single_company(
         'email': email or '',
         'website': website or '',
         'discovered_urls': '\n'.join(all_discovered_urls) if all_discovered_urls else '',
+        # Decision maker fields
+        'dm1_name': decision_makers[0]['name'] if len(decision_makers) > 0 else '',
+        'dm1_title': decision_makers[0]['title'] if len(decision_makers) > 0 else '',
+        'dm1_linkedin': decision_makers[0]['linkedin_url'] if len(decision_makers) > 0 else '',
+        'dm2_name': decision_makers[1]['name'] if len(decision_makers) > 1 else '',
+        'dm2_title': decision_makers[1]['title'] if len(decision_makers) > 1 else '',
+        'dm2_linkedin': decision_makers[1]['linkedin_url'] if len(decision_makers) > 1 else '',
+        'dm3_name': decision_makers[2]['name'] if len(decision_makers) > 2 else '',
+        'dm3_title': decision_makers[2]['title'] if len(decision_makers) > 2 else '',
+        'dm3_linkedin': decision_makers[2]['linkedin_url'] if len(decision_makers) > 2 else '',
         'status': status
     }

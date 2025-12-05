@@ -118,7 +118,7 @@ class ExcelHandler:
             BytesIO object containing the Excel file
         """
         try:
-            # Define column order - updated with clear website/domain column
+            # Define column order - updated with clear website/domain column and decision makers
             columns = [
                 'name',
                 'uen',
@@ -128,6 +128,16 @@ class ExcelHandler:
                 'phone_3',
                 'email',
                 'website',
+                # Decision maker columns
+                'dm1_name',
+                'dm1_title',
+                'dm1_linkedin',
+                'dm2_name',
+                'dm2_title',
+                'dm2_linkedin',
+                'dm3_name',
+                'dm3_title',
+                'dm3_linkedin',
                 'discovered_urls',
                 'status'
             ]
@@ -154,6 +164,16 @@ class ExcelHandler:
                 'Phone 3',
                 'Email Address',
                 'Company Website',
+                # Decision maker columns
+                'Decision Maker 1 - Name',
+                'Decision Maker 1 - Title',
+                'Decision Maker 1 - LinkedIn',
+                'Decision Maker 2 - Name',
+                'Decision Maker 2 - Title',
+                'Decision Maker 2 - LinkedIn',
+                'Decision Maker 3 - Name',
+                'Decision Maker 3 - Title',
+                'Decision Maker 3 - LinkedIn',
                 'Discovered URLs',
                 'Enrichment Status'
             ]
