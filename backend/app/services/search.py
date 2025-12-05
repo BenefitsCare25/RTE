@@ -144,12 +144,25 @@ EXCLUDED_DOMAINS = [
 
 # URL patterns to exclude (files, downloads, archives - not scrapable HTML)
 EXCLUDED_URL_PATTERNS = [
+    # File extensions
     r'\.pdf$',
     r'\.doc[x]?$',
     r'\.xls[x]?$',
     r'\.ppt[x]?$',
+    # Download/account paths
+    r'/downloads?/',  # Matches /download/ and /downloads/
+    r'/account/',
+    r'/user/',
+    r'/login/',
+    r'/register/',
+    r'/signin/',
+    r'/signup/',
+    # Static file/document paths
+    r'/static-files/',  # Investor relations documents, etc.
+    r'/static/files/',
+    r'/files/',
+    # Archive/library paths
     r'/bitstream/',
-    r'/download/',
     r'/newspapers/',
     r'/digitised/',
     r'/document/',
