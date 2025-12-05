@@ -402,163 +402,163 @@ class WebScraper:
 
                 # Create browser context with stealth settings
                 context = await self.browser.new_context(
-                user_agent=user_agent,
-                viewport=viewport,
-                locale='en-SG',
-                timezone_id='Asia/Singapore',
-                geolocation={'latitude': 1.3521, 'longitude': 103.8198},
-                permissions=['geolocation'],
-                extra_http_headers={
-                    'Accept-Language': 'en-SG,en-US;q=0.9,en;q=0.8',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache',
-                    'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-                    'Sec-Ch-Ua-Mobile': '?0',
-                    'Sec-Ch-Ua-Platform': '"Windows"',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1',
-                }
-            )
+                    user_agent=user_agent,
+                    viewport=viewport,
+                    locale='en-SG',
+                    timezone_id='Asia/Singapore',
+                    geolocation={'latitude': 1.3521, 'longitude': 103.8198},
+                    permissions=['geolocation'],
+                    extra_http_headers={
+                        'Accept-Language': 'en-SG,en-US;q=0.9,en;q=0.8',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache',
+                        'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                        'Sec-Ch-Ua-Mobile': '?0',
+                        'Sec-Ch-Ua-Platform': '"Windows"',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1',
+                        'Upgrade-Insecure-Requests': '1',
+                    }
+                )
 
-            # Restore cookies from previous session if available
-            if domain in self._session_cookies and self._session_cookies[domain]:
-                await context.add_cookies(self._session_cookies[domain])
-                logger.info(f"Restored {len(self._session_cookies[domain])} cookies for {domain}")
+                # Restore cookies from previous session if available
+                if domain in self._session_cookies and self._session_cookies[domain]:
+                    await context.add_cookies(self._session_cookies[domain])
+                    logger.info(f"Restored {len(self._session_cookies[domain])} cookies for {domain}")
 
-            page = await context.new_page()
+                page = await context.new_page()
 
-            # Apply stealth - use playwright-stealth if available, otherwise manual
-            if STEALTH_AVAILABLE:
-                await stealth_async(page)
-                logger.debug("Applied playwright-stealth")
-            else:
-                await self._apply_manual_stealth(page)
-                logger.debug("Applied manual stealth scripts")
+                # Apply stealth - use playwright-stealth if available, otherwise manual
+                if STEALTH_AVAILABLE:
+                    await stealth_async(page)
+                    logger.debug("Applied playwright-stealth")
+                else:
+                    await self._apply_manual_stealth(page)
+                    logger.debug("Applied manual stealth scripts")
 
-            # No timeout to prevent frontend disruption
-            page.set_default_timeout(0)
+                # No timeout to prevent frontend disruption
+                page.set_default_timeout(0)
 
-            # Random delay between requests
-            if self._request_count > 1:
-                await asyncio.sleep(random.uniform(1.5, 3.5))
+                # Random delay between requests
+                if self._request_count > 1:
+                    await asyncio.sleep(random.uniform(1.5, 3.5))
 
-            # Navigate to website
-            logger.info(f"Loading page: {website}")
-            await page.goto(website, wait_until='domcontentloaded', timeout=0)
+                # Navigate to website
+                logger.info(f"Loading page: {website}")
+                await page.goto(website, wait_until='domcontentloaded', timeout=0)
 
-            # Simulate human behavior immediately
-            await self._simulate_human_behavior(page)
+                # Simulate human behavior immediately
+                await self._simulate_human_behavior(page)
 
-            # Wait for Cloudflare with active human simulation
-            page_accessible = await self._wait_for_cloudflare(page, max_wait=20)
+                # Wait for Cloudflare with active human simulation
+                page_accessible = await self._wait_for_cloudflare(page, max_wait=20)
 
-            # Get page content
-            text_content = await page.inner_text('body')
+                # Get page content
+                text_content = await page.inner_text('body')
 
-            # Check if blocked
-            text_lower = text_content.lower()
-            is_blocked = any(indicator in text_lower for indicator in CLOUDFLARE_INDICATORS)
-            is_blocked = is_blocked and len(text_content) < 3000
+                # Check if blocked
+                text_lower = text_content.lower()
+                is_blocked = any(indicator in text_lower for indicator in CLOUDFLARE_INDICATORS)
+                is_blocked = is_blocked and len(text_content) < 3000
 
-            if is_blocked:
-                logger.warning(f"Cloudflare blocking access to {website}")
+                if is_blocked:
+                    logger.warning(f"Cloudflare blocking access to {website}")
 
-                # Save any cookies we got (might help on retry)
+                    # Save any cookies we got (might help on retry)
+                    cookies = await context.cookies()
+                    if cookies:
+                        self._session_cookies[domain] = cookies
+                        logger.info(f"Saved {len(cookies)} cookies for potential retry")
+
+                    # Force cleanup of browser context
+                    await context.close()
+                    self._active_contexts -= 1
+                    del context
+
+                    # Retry with FlareSolverr if available
+                    if self.flaresolverr_url:
+                        flaresolverr_result = await self._try_flaresolverr(website)
+                        if flaresolverr_result:
+                            return flaresolverr_result
+
+                    # One retry with saved cookies
+                    if retry_count < max_retries:
+                        logger.info(f"Retrying {website} with saved cookies...")
+                        await asyncio.sleep(random.uniform(3, 5))
+                        return await self.scrape_company_contacts(website, retry_count + 1)
+
+                    return {
+                        'phone': None,
+                        'email': None,
+                        'website': website,
+                        'all_phones': [],
+                        'all_emails': [],
+                        'blocked': True
+                    }
+
+                # Success! Save cookies for future use
                 cookies = await context.cookies()
                 if cookies:
                     self._session_cookies[domain] = cookies
-                    logger.info(f"Saved {len(cookies)} cookies for potential retry")
 
-                # Force cleanup of browser context
-                await context.close()
-                self._active_contexts -= 1
-                del context
+                # Extract contacts from main page
+                main_page_content = await page.content()
+                logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
 
-                # Retry with FlareSolverr if available
-                if self.flaresolverr_url:
-                    flaresolverr_result = await self._try_flaresolverr(website)
-                    if flaresolverr_result:
-                        return flaresolverr_result
+                contacts = self.extractor.extract_all_contacts(main_page_content)
+                logger.info(f"Main page extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
 
-                # One retry with saved cookies
-                if retry_count < max_retries:
-                    logger.info(f"Retrying {website} with saved cookies...")
-                    await asyncio.sleep(random.uniform(3, 5))
-                    return await self.scrape_company_contacts(website, retry_count + 1)
+                # Try contact page if EITHER phone OR email is missing
+                # This ensures we get complete contact info even if main page only has partial data
+                if not contacts['phone'] or not contacts['email']:
+                    missing = []
+                    if not contacts['phone']:
+                        missing.append('phone')
+                    if not contacts['email']:
+                        missing.append('email')
+                    logger.info(f"Missing {', '.join(missing)} on main page, searching for contact page...")
 
-                return {
-                    'phone': None,
-                    'email': None,
-                    'website': website,
-                    'all_phones': [],
-                    'all_emails': [],
-                    'blocked': True
-                }
+                    contact_page_url = await self._find_contact_page(page, website)
 
-            # Success! Save cookies for future use
-            cookies = await context.cookies()
-            if cookies:
-                self._session_cookies[domain] = cookies
+                    if contact_page_url:
+                        logger.info(f"Found contact page: {contact_page_url}")
+                        await asyncio.sleep(random.uniform(1, 2))
+                        await self._simulate_human_behavior(page)
+                        try:
+                            await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
+                            await asyncio.sleep(1)  # Wait for page to settle
+                            contact_page_content = await page.content()
+                            contact_page_contacts = self.extractor.extract_all_contacts(contact_page_content)
+                            logger.info(f"Contact page extraction: Phones={contact_page_contacts.get('all_phones', [])}, Emails={contact_page_contacts.get('all_emails', [])}")
 
-            # Extract contacts from main page
-            main_page_content = await page.content()
-            logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
+                            # Merge contact page results with main page results
+                            # Only fill in missing data, don't overwrite existing
+                            if not contacts['phone'] and contact_page_contacts.get('phone'):
+                                contacts['phone'] = contact_page_contacts['phone']
+                                logger.info(f"Got phone from contact page: {contacts['phone']}")
+                            if not contacts['email'] and contact_page_contacts.get('email'):
+                                contacts['email'] = contact_page_contacts['email']
+                                logger.info(f"Got email from contact page: {contacts['email']}")
 
-            contacts = self.extractor.extract_all_contacts(main_page_content)
-            logger.info(f"Main page extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+                            # Merge all_phones and all_emails lists
+                            existing_phones = set(contacts.get('all_phones', []))
+                            for phone in contact_page_contacts.get('all_phones', []):
+                                if phone and phone not in existing_phones:
+                                    contacts.setdefault('all_phones', []).append(phone)
+                                    existing_phones.add(phone)
 
-            # Try contact page if EITHER phone OR email is missing
-            # This ensures we get complete contact info even if main page only has partial data
-            if not contacts['phone'] or not contacts['email']:
-                missing = []
-                if not contacts['phone']:
-                    missing.append('phone')
-                if not contacts['email']:
-                    missing.append('email')
-                logger.info(f"Missing {', '.join(missing)} on main page, searching for contact page...")
+                            existing_emails = set(contacts.get('all_emails', []))
+                            for email in contact_page_contacts.get('all_emails', []):
+                                if email and email not in existing_emails:
+                                    contacts.setdefault('all_emails', []).append(email)
+                                    existing_emails.add(email)
 
-                contact_page_url = await self._find_contact_page(page, website)
-
-                if contact_page_url:
-                    logger.info(f"Found contact page: {contact_page_url}")
-                    await asyncio.sleep(random.uniform(1, 2))
-                    await self._simulate_human_behavior(page)
-                    try:
-                        await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
-                        await asyncio.sleep(1)  # Wait for page to settle
-                        contact_page_content = await page.content()
-                        contact_page_contacts = self.extractor.extract_all_contacts(contact_page_content)
-                        logger.info(f"Contact page extraction: Phones={contact_page_contacts.get('all_phones', [])}, Emails={contact_page_contacts.get('all_emails', [])}")
-
-                        # Merge contact page results with main page results
-                        # Only fill in missing data, don't overwrite existing
-                        if not contacts['phone'] and contact_page_contacts.get('phone'):
-                            contacts['phone'] = contact_page_contacts['phone']
-                            logger.info(f"Got phone from contact page: {contacts['phone']}")
-                        if not contacts['email'] and contact_page_contacts.get('email'):
-                            contacts['email'] = contact_page_contacts['email']
-                            logger.info(f"Got email from contact page: {contacts['email']}")
-
-                        # Merge all_phones and all_emails lists
-                        existing_phones = set(contacts.get('all_phones', []))
-                        for phone in contact_page_contacts.get('all_phones', []):
-                            if phone and phone not in existing_phones:
-                                contacts.setdefault('all_phones', []).append(phone)
-                                existing_phones.add(phone)
-
-                        existing_emails = set(contacts.get('all_emails', []))
-                        for email in contact_page_contacts.get('all_emails', []):
-                            if email and email not in existing_emails:
-                                contacts.setdefault('all_emails', []).append(email)
-                                existing_emails.add(email)
-
-                    except Exception as e:
-                        logger.warning(f"Failed to load contact page {contact_page_url}: {e}")
+                        except Exception as e:
+                            logger.warning(f"Failed to load contact page {contact_page_url}: {e}")
 
                 # Force cleanup of browser context
                 await context.close()
@@ -664,33 +664,33 @@ class WebScraper:
 
                 # Create browser context
                 context = await self.browser.new_context(
-                user_agent=user_agent,
-                viewport=viewport,
-                locale='en-SG',
-                timezone_id='Asia/Singapore',
-                extra_http_headers={
-                    'Accept-Language': 'en-SG,en-US;q=0.9,en;q=0.8',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                }
-            )
+                    user_agent=user_agent,
+                    viewport=viewport,
+                    locale='en-SG',
+                    timezone_id='Asia/Singapore',
+                    extra_http_headers={
+                        'Accept-Language': 'en-SG,en-US;q=0.9,en;q=0.8',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    }
+                )
 
-            # Restore cookies if available
-            if domain in self._session_cookies and self._session_cookies[domain]:
-                await context.add_cookies(self._session_cookies[domain])
+                # Restore cookies if available
+                if domain in self._session_cookies and self._session_cookies[domain]:
+                    await context.add_cookies(self._session_cookies[domain])
 
-            page = await context.new_page()
+                page = await context.new_page()
 
-            # Apply stealth
-            if STEALTH_AVAILABLE:
-                await stealth_async(page)
-            else:
-                await self._apply_manual_stealth(page)
+                # Apply stealth
+                if STEALTH_AVAILABLE:
+                    await stealth_async(page)
+                else:
+                    await self._apply_manual_stealth(page)
 
-            page.set_default_timeout(0)
+                page.set_default_timeout(0)
 
-            # Random delay
-            if self._request_count > 1:
-                await asyncio.sleep(random.uniform(1.0, 2.5))
+                # Random delay
+                if self._request_count > 1:
+                    await asyncio.sleep(random.uniform(1.0, 2.5))
 
                 # Navigate to main page
                 await page.goto(website, wait_until='domcontentloaded', timeout=0)
