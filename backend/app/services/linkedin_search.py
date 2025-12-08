@@ -177,6 +177,11 @@ class LinkedInSearchService:
         """
         Generate multiple LinkedIn search queries with fallback strategies.
 
+        Uses progressive relaxation:
+        1. Exact full company name (strict)
+        2. Primary company identifier (relaxed)
+        3. Keywords without quotes (most relaxed)
+
         Args:
             company_name: Company name
 
@@ -185,19 +190,36 @@ class LinkedInSearchService:
         """
         clean_name = self._clean_company_name(company_name)
 
-        queries = [
-            # Strategy 1: Target C-Suite
-            f'site:linkedin.com/in/ "{clean_name}" (CEO OR COO OR CFO) Singapore',
+        # Extract primary company identifier (first significant word/acronym)
+        # For "ADM ASIA-PACIFIC TRADING" → "ADM"
+        # For "DBS Bank" → "DBS"
+        words = clean_name.split()
+        primary_identifier = words[0] if words else clean_name
 
-            # Strategy 2: Founders & Directors
-            f'site:linkedin.com/in/ "{clean_name}" (Founder OR "Managing Director") Singapore',
+        queries = []
 
-            # Strategy 3: HR Leadership
-            f'site:linkedin.com/in/ "{clean_name}" ("HR Director" OR "HR Manager" OR "Chief People Officer") Singapore',
+        # Strategy 1: Full company name with quotes (exact match)
+        # Only use if company name is substantial (not just 3-letter acronym)
+        if len(clean_name) > 10:
+            queries.extend([
+                f'site:linkedin.com/in/ "{clean_name}" (CEO OR COO OR CFO) Singapore',
+                f'site:linkedin.com/in/ "{clean_name}" (Founder OR "Managing Director") Singapore',
+            ])
 
-            # Strategy 4: Broad executive search
-            f'site:linkedin.com/in/ "{clean_name}" Singapore (Director OR Executive)',
-        ]
+        # Strategy 2: Primary identifier + keywords (relaxed - no quotes on company)
+        # This catches cases like "Managing Director at ADM" for "ADM ASIA-PACIFIC TRADING"
+        queries.extend([
+            f'site:linkedin.com/in/ {primary_identifier} (CEO OR COO OR CFO) Singapore',
+            f'site:linkedin.com/in/ {primary_identifier} (Founder OR "Managing Director") Singapore',
+            f'site:linkedin.com/in/ {primary_identifier} ("HR Director" OR "HR Manager" OR "Chief People Officer") Singapore',
+        ])
+
+        # Strategy 3: Full name without quotes (most relaxed)
+        # Allows partial matching for multi-word company names
+        if len(words) > 1:
+            queries.append(
+                f'site:linkedin.com/in/ {clean_name} (CEO OR Founder OR Director) Singapore'
+            )
 
         return queries
 
@@ -540,8 +562,9 @@ class LinkedInSearchService:
         New approach:
         1. Extract CURRENT company from LinkedIn profile title/snippet
         2. Use fuzzy matching to compare extracted company vs target company
-        3. Check for "Former"/"Ex-" indicators (exclude these)
-        4. Require high similarity threshold (80%+)
+        3. Handle abbreviated company names (e.g., "ADM" for "ADM ASIA-PACIFIC TRADING")
+        4. Check for "Former"/"Ex-" indicators (exclude these)
+        5. Require high similarity threshold (75%+) or exact prefix match
 
         Args:
             result: SerpAPI result dict
@@ -572,15 +595,39 @@ class LinkedInSearchService:
         # STEP 3: Calculate similarity between extracted company and target company
         similarity = self._calculate_company_similarity(extracted_company, company_name)
 
-        # STEP 4: Require 75%+ similarity for match
+        # STEP 4: Check multiple matching strategies
         SIMILARITY_THRESHOLD = 0.75
 
+        # Strategy A: High similarity match (75%+)
         if similarity >= SIMILARITY_THRESHOLD:
-            logger.info(f"✓ Company match: '{extracted_company}' vs '{company_name}' (similarity: {similarity:.2%})")
+            logger.info(f"✓ Company match (similarity): '{extracted_company}' vs '{company_name}' ({similarity:.2%})")
             return True
-        else:
-            logger.debug(f"✗ Company mismatch: '{extracted_company}' vs '{company_name}' (similarity: {similarity:.2%} < {SIMILARITY_THRESHOLD:.0%})")
-            return False
+
+        # Strategy B: Abbreviated company name match
+        # Handle cases like "ADM" matching "ADM ASIA-PACIFIC TRADING PTE. LTD."
+        norm_extracted = self._normalize_company_name(extracted_company)
+        norm_target = self._normalize_company_name(company_name)
+        target_words = norm_target.split()
+
+        # Check if extracted company is the PRIMARY identifier (first word) of target
+        if target_words and norm_extracted == target_words[0]:
+            logger.info(f"✓ Company match (primary identifier): '{extracted_company}' is primary identifier of '{company_name}'")
+            return True
+
+        # Check if extracted is a complete word/acronym within target
+        # e.g., "DBS" should match "DBS Bank Ltd" but not "Subsidiary of DBS"
+        if norm_extracted in target_words:
+            logger.info(f"✓ Company match (exact word match): '{extracted_company}' found in '{company_name}'")
+            return True
+
+        # Strategy C: Extracted company is longer but target is substring
+        # e.g., LinkedIn shows "DBS Bank Ltd" but target is "DBS"
+        if norm_target in norm_extracted and len(norm_target) >= 3:
+            logger.info(f"✓ Company match (target is substring): '{company_name}' found in '{extracted_company}'")
+            return True
+
+        logger.debug(f"✗ Company mismatch: '{extracted_company}' vs '{company_name}' (similarity: {similarity:.2%} < {SIMILARITY_THRESHOLD:.0%})")
+        return False
 
     def _is_excluded(self, job_title: str) -> bool:
         """
