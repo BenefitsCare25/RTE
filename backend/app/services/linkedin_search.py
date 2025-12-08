@@ -17,6 +17,7 @@ import logging
 import asyncio
 from typing import List, Dict, Optional, Tuple
 from serpapi import GoogleSearch
+from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -418,34 +419,168 @@ class LinkedInSearchService:
 
         return None, 0
 
+    def _extract_company_from_linkedin_title(self, title: str, snippet: str) -> Optional[str]:
+        """
+        Extract CURRENT company name from LinkedIn profile title and snippet.
+
+        LinkedIn title formats:
+        - "John Doe - CEO at ABC Company | LinkedIn"
+        - "Jane Smith - Founder & CEO at XYZ Corp | LinkedIn"
+        - "Name - Job Title at Company Name - Location | LinkedIn"
+
+        Snippet formats:
+        - "CEO at ABC Company · Singapore"
+        - "Founder at XYZ Corp · Experience: ABC..."
+
+        Args:
+            title: LinkedIn page title
+            snippet: LinkedIn page snippet
+
+        Returns:
+            Company name or None if not found
+        """
+        try:
+            # Priority 1: Extract from title using " at " pattern
+            # Remove "| LinkedIn" suffix first
+            title_clean = re.sub(r'\s*\|\s*LinkedIn\s*$', '', title, flags=re.IGNORECASE)
+            title_clean = re.sub(r'\s*-\s*LinkedIn\s*$', '', title_clean, flags=re.IGNORECASE)
+
+            # Pattern: "Name - Job Title at Company Name" or "Job Title at Company"
+            # Extract everything after " at " and before location/punctuation
+            match = re.search(r'\sat\s+([^-|·•]+)', title_clean, re.IGNORECASE)
+            if match:
+                company = match.group(1).strip()
+                # Clean up location info (e.g., "Company - Singapore" → "Company")
+                company = re.split(r'\s*[-–—]\s*', company)[0].strip()
+                if company and len(company) > 2:
+                    logger.debug(f"Extracted company from title: '{company}'")
+                    return company
+
+            # Priority 2: Extract from snippet using " at " pattern
+            match = re.search(r'\sat\s+([^·•]+)', snippet, re.IGNORECASE)
+            if match:
+                company = match.group(1).strip()
+                # Clean up location/separator
+                company = re.split(r'\s*[·•]\s*', company)[0].strip()
+                company = re.split(r'\s*[-–—]\s*', company)[0].strip()
+                if company and len(company) > 2:
+                    logger.debug(f"Extracted company from snippet: '{company}'")
+                    return company
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Company extraction failed: {str(e)}")
+            return None
+
+    def _normalize_company_name(self, company_name: str) -> str:
+        """
+        Normalize company name for accurate comparison.
+
+        Removes common suffixes, punctuation, and standardizes format.
+
+        Args:
+            company_name: Raw company name
+
+        Returns:
+            Normalized company name
+        """
+        normalized = company_name.upper()
+
+        # Remove common company suffixes
+        suffixes = [
+            r'\s*\(\s*S\s*\)',
+            r'\s*\(\s*SINGAPORE\s*\)',
+            r'\s+PRIVATE\s+LIMITED',
+            r'\s+PTE\.?\s+LTD\.?',
+            r'\s+SDN\.?\s+BHD\.?',
+            r'\s+LIMITED',
+            r'\s+LTD\.?',
+            r'\s+PTE\.?',
+            r'\s+CORPORATION',
+            r'\s+CORP\.?',
+            r'\s+INC\.?',
+            r'\s+LLC',
+            r'\s+LLP',
+        ]
+
+        for suffix in suffixes:
+            normalized = re.sub(suffix, '', normalized, flags=re.IGNORECASE)
+
+        # Remove punctuation and extra spaces
+        normalized = re.sub(r'[.,&\-–—]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+
+        return normalized
+
+    def _calculate_company_similarity(self, company1: str, company2: str) -> float:
+        """
+        Calculate similarity ratio between two company names using fuzzy matching.
+
+        Args:
+            company1: First company name
+            company2: Second company name
+
+        Returns:
+            Similarity ratio from 0.0 to 1.0
+        """
+        norm1 = self._normalize_company_name(company1)
+        norm2 = self._normalize_company_name(company2)
+
+        # Use SequenceMatcher for fuzzy string matching
+        similarity = SequenceMatcher(None, norm1, norm2).ratio()
+
+        logger.debug(f"Company similarity: '{norm1}' vs '{norm2}' = {similarity:.2f}")
+        return similarity
+
     def _matches_company(self, result: Dict, company_name: str) -> bool:
         """
-        Check if LinkedIn result matches target company.
+        Check if LinkedIn result matches target company using STRICT validation.
+
+        New approach:
+        1. Extract CURRENT company from LinkedIn profile title/snippet
+        2. Use fuzzy matching to compare extracted company vs target company
+        3. Check for "Former"/"Ex-" indicators (exclude these)
+        4. Require high similarity threshold (80%+)
 
         Args:
             result: SerpAPI result dict
             company_name: Target company name
 
         Returns:
-            True if result matches company
+            True if result matches company with high confidence
         """
-        title = result.get("title", "").lower()
-        snippet = result.get("snippet", "").lower()
-        text = f"{title} {snippet}"
+        title = result.get("title", "")
+        snippet = result.get("snippet", "")
 
-        # Extract keywords from company name
-        clean_name = self._clean_company_name(company_name)
-        keywords = [k.strip() for k in re.split(r'[\s&]+', clean_name) if len(k.strip()) > 2]
+        # STEP 1: Check for "Former", "Ex-", "Previous" indicators - exclude immediately
+        exclusion_patterns = ['former', 'ex-', 'previous', 'past', 'previously at']
+        text_lower = f"{title} {snippet}".lower()
 
-        if not keywords:
+        for pattern in exclusion_patterns:
+            if pattern in text_lower:
+                logger.debug(f"Excluded: Profile contains '{pattern}' indicator")
+                return False
+
+        # STEP 2: Extract current company from LinkedIn profile
+        extracted_company = self._extract_company_from_linkedin_title(title, snippet)
+
+        if not extracted_company:
+            logger.debug("No company extracted from profile - excluding")
             return False
 
-        # Count keyword matches
-        matches = sum(1 for keyword in keywords if keyword.lower() in text)
+        # STEP 3: Calculate similarity between extracted company and target company
+        similarity = self._calculate_company_similarity(extracted_company, company_name)
 
-        # Require at least 50% keyword match
-        match_ratio = matches / len(keywords)
-        return match_ratio >= 0.5
+        # STEP 4: Require 75%+ similarity for match
+        SIMILARITY_THRESHOLD = 0.75
+
+        if similarity >= SIMILARITY_THRESHOLD:
+            logger.info(f"✓ Company match: '{extracted_company}' vs '{company_name}' (similarity: {similarity:.2%})")
+            return True
+        else:
+            logger.debug(f"✗ Company mismatch: '{extracted_company}' vs '{company_name}' (similarity: {similarity:.2%} < {SIMILARITY_THRESHOLD:.0%})")
+            return False
 
     def _is_excluded(self, job_title: str) -> bool:
         """
