@@ -58,6 +58,13 @@ DIRECTORY_DOMAINS = [
     'indialei.in',             # India LEI directory (company identifier)
     'lei.info',                # LEI directory
     'lei-lookup.com',          # LEI directory
+    'leicode.sg',              # LEI code directory
+    'legalentityidentifier.in', # LEI directory (India)
+    'yelu.sg',                 # Business directory
+    'sjn.sg',                  # SJN Supplier Search directory
+    'infobel.sg',              # Infobel business directory
+    'local.infobel.sg',        # Infobel local directory
+    'agri-biz.com',            # Agriculture business directory
     # Legal/litigation sites (NOT company websites)
     'elitigation.sg',          # Court cases - not company info
     'lawnet.sg',               # Legal database
@@ -98,6 +105,7 @@ DIRECTORY_DOMAINS = [
     'lazada.sg',
     'shopee.sg',
     'carousell.com',
+    'carousell.sg',
     'qoo10.sg',
     # Press release / news aggregators (NOT company websites)
     'mynewsdesk.com',
@@ -228,14 +236,16 @@ class SearchService:
             if clean == prev:
                 break
 
-        # Split into words, keep only significant ones (3+ chars)
-        words = re.findall(r'\b[A-Z]{3,}\b', clean)
+        # Split into words, keep significant ones (2+ chars to capture initials like "AT" from "A & T")
+        # Changed from {3,} to {2,} to preserve 2-letter distinctive keywords
+        words = re.findall(r'\b[A-Z]{2,}\b', clean)
 
         # STRICT common words - only truly generic terms that NEVER identify a company
         # Note: Words like ASIA, ENTERPRISES, HOLDINGS, SERVICES, TRADING are kept
         # because they may be the ONLY identifying part of a company name
-        strict_common = {'THE', 'AND', 'FOR', 'PTE', 'LTD', 'SDN', 'BHD', 'INC', 'LLC',
-                        'COMPANY', 'PRIVATE', 'LIMITED'}
+        strict_common = {'THE', 'AND', 'FOR', 'OF', 'TO', 'IN', 'AT', 'ON', 'BY',
+                        'PTE', 'LTD', 'SDN', 'BHD', 'INC', 'LLC',
+                        'COMPANY', 'PRIVATE', 'LIMITED', 'CO'}
 
         # Secondary common words - only remove if other keywords exist
         secondary_common = {'ASIA', 'PACIFIC', 'SINGAPORE', 'GLOBAL', 'GROUP',
@@ -245,17 +255,23 @@ class SearchService:
         # First pass: Remove strict common words
         keywords = [w.lower() for w in words if w not in strict_common]
 
+        # If very few keywords remain (≤1), keep them even if they're "secondary common"
+        # This prevents over-filtering short company names
+        if len(keywords) <= 1:
+            logger.info(f"  Keyword extraction: few keywords ({keywords}), keeping as primary identifiers")
+            return keywords
+
         # Second pass: Only remove secondary common words if we have other unique keywords
         unique_keywords = [k for k in keywords if k.upper() not in secondary_common]
 
-        if unique_keywords:
-            # We have unique keywords, safe to remove secondary common words
+        if len(unique_keywords) >= 2:
+            # We have multiple unique keywords, safe to remove secondary common words
             keywords = unique_keywords
             logger.debug(f"  Keyword extraction: removed secondary common words, kept {keywords}")
         else:
-            # No unique keywords - keep secondary common words as they're the primary identifier
+            # Keep secondary common words as they're important identifiers
             # e.g., "ASIA ENTERPRISES" → ["asia", "enterprises"]
-            logger.info(f"  Keyword extraction: keeping secondary common words as primary identifiers: {keywords}")
+            logger.info(f"  Keyword extraction: keeping secondary common words as identifiers: {keywords}")
 
         return keywords
 

@@ -646,7 +646,7 @@ class WebScraper:
 
         return None
 
-    async def scrape_email_only(self, website: str) -> Optional[str]:
+    async def scrape_email_only(self, website: str) -> Dict[str, Optional[str]]:
         """
         Scrape a website specifically for email addresses.
         Used when we already have phone from Google Maps but need email.
@@ -660,7 +660,7 @@ class WebScraper:
             website: Company website URL
 
         Returns:
-            Primary email address if found, None otherwise
+            Dictionary with 'email' and 'html_content' (first 5KB for validation)
         """
         # Limit concurrent browser contexts to prevent memory exhaustion
         async with self._context_semaphore:
@@ -720,7 +720,7 @@ class WebScraper:
                     await context.close()
                     self._active_contexts -= 1
                     del context
-                    return None
+                    return {'email': None, 'html_content': None}
 
                 # Extract emails from main page
                 main_content = await page.content()
@@ -731,7 +731,10 @@ class WebScraper:
                     await context.close()
                     self._active_contexts -= 1
                     del context
-                    return contacts['email']
+                    return {
+                        'email': contacts['email'],
+                        'html_content': main_content[:5000]  # First 5KB for validation
+                    }
 
                 # Try contact page
                 contact_page_url = await self._find_contact_page(page, website)
@@ -748,7 +751,10 @@ class WebScraper:
                             await context.close()
                             self._active_contexts -= 1
                             del context
-                            return contacts['email']
+                            return {
+                                'email': contacts['email'],
+                                'html_content': contact_content[:5000]  # First 5KB for validation
+                            }
                     except Exception as e:
                         logger.warning(f"Failed to load contact page: {e}")
 
@@ -770,7 +776,10 @@ class WebScraper:
                                     await context.close()
                                     self._active_contexts -= 1
                                     del context
-                                    return contacts['email']
+                                    return {
+                                        'email': contacts['email'],
+                                        'html_content': pattern_content[:5000]  # First 5KB for validation
+                                    }
                     except:
                         continue
 
@@ -779,13 +788,13 @@ class WebScraper:
                 self._active_contexts -= 1
                 del context
                 logger.info(f"No email found on {website}")
-                return None
+                return {'email': None, 'html_content': None}
 
             except Exception as e:
                 logger.error(f"Email scrape error for {website}: {str(e)}")
                 # Ensure context is cleaned up on error
                 self._active_contexts -= 1
-                return None
+                return {'email': None, 'html_content': None}
 
     async def scrape_multiple_companies(
         self,

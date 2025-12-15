@@ -29,7 +29,12 @@ class ContactExtractor:
     DIRECTORY_EMAIL_DOMAINS = [
         'sgpbusiness.com', 'sgpgrid.com', 'singaporedirectory.com',
         'yellowpages.com.sg', 'streetdirectory.com', 'sgpcompanies.com',
-        'bizfile.gov.sg', 'acra.gov.sg'
+        'bizfile.gov.sg', 'acra.gov.sg',
+        # Additional directory/marketplace domains (from log analysis)
+        'yelu.sg', 'sjn.sg', 'infobel.sg',
+        'leicode.sg', 'legalentityidentifier.in',
+        'carousell.sg', 'carousell.com',
+        'redbus.sg', 'marshallcavendish.com', 'agri-biz.com'
     ]
 
     # Platform/system emails to exclude (internal tracking, not real contacts)
@@ -232,6 +237,82 @@ class ContactExtractor:
 
             return True
         except Exception:
+            return False
+
+    @staticmethod
+    def validate_email_domain(email: str, website_url: str, company_name: str = None) -> bool:
+        """
+        Validate that email domain matches website domain or company name.
+
+        Prevents extracting directory site emails or emails from unrelated companies.
+
+        Args:
+            email: Email address to validate
+            website_url: The website URL where email was found
+            company_name: Optional company name for additional validation
+
+        Returns:
+            True if email is valid and belongs to the company
+        """
+        if not email or not website_url:
+            return True  # No validation needed if missing data
+
+        try:
+            from urllib.parse import urlparse
+
+            # Extract domain from email
+            email_domain = email.split('@')[1].lower() if '@' in email else ''
+            if not email_domain:
+                return False
+
+            # Check if email is from a known directory domain
+            if email_domain in ContactExtractor.DIRECTORY_EMAIL_DOMAINS:
+                return False
+
+            # Check if email is from a platform/system domain
+            for platform_domain in ContactExtractor.PLATFORM_EMAIL_DOMAINS:
+                if email_domain == platform_domain or email_domain.endswith('.' + platform_domain):
+                    return False
+
+            # Extract domain from website URL
+            parsed_url = urlparse(website_url)
+            website_domain = parsed_url.netloc.lower()
+
+            # Remove www. prefix for comparison
+            if website_domain.startswith('www.'):
+                website_domain = website_domain[4:]
+            if email_domain.startswith('www.'):
+                email_domain = email_domain[4:]
+
+            # Exact match
+            if email_domain == website_domain:
+                return True
+
+            # Check if email domain is subdomain of website (e.g., mail.company.com vs company.com)
+            if email_domain.endswith('.' + website_domain):
+                return True
+
+            # Check if website domain is subdomain of email domain (e.g., www.company.com vs company.com)
+            if website_domain.endswith('.' + email_domain):
+                return True
+
+            # Get base domains (last 2 parts: domain.tld)
+            email_parts = email_domain.split('.')
+            website_parts = website_domain.split('.')
+
+            if len(email_parts) >= 2 and len(website_parts) >= 2:
+                email_base = '.'.join(email_parts[-2:])
+                website_base = '.'.join(website_parts[-2:])
+
+                # Base domains should match
+                if email_base == website_base:
+                    return True
+
+            # No match found - different companies
+            return False
+
+        except Exception:
+            # On error, reject the email to be safe
             return False
 
     @staticmethod
