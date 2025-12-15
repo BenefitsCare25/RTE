@@ -14,6 +14,9 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+# Disable verbose httpx logging (prevents API key exposure in logs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 class GoogleMapsSearchService:
     """Service for searching Google Maps business listings via SerpAPI"""
@@ -117,7 +120,7 @@ class GoogleMapsSearchService:
 
             # Log request parameters (excluding API key)
             safe_params = {k: v for k, v in params.items() if k != 'api_key'}
-            logger.info(f"SerpAPI Request params: {json.dumps(safe_params)}")
+            logger.debug(f"SerpAPI Request params: {json.dumps(safe_params)}")
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
@@ -126,7 +129,7 @@ class GoogleMapsSearchService:
                 )
 
                 self._request_count += 1
-                logger.info(f"SerpAPI request #{self._request_count} - Status: {response.status_code}")
+                logger.debug(f"SerpAPI request #{self._request_count} - Status: {response.status_code}")
 
                 if response.status_code != 200:
                     logger.error(f"Google Maps API error: {response.status_code}")
@@ -138,23 +141,23 @@ class GoogleMapsSearchService:
                 # ============================================
                 # DEBUG LOGGING - Full response analysis
                 # ============================================
-                logger.info(f"=== SerpAPI Response Debug for '{company_name}' ===")
-                logger.info(f"Response keys: {list(data.keys())}")
+                logger.debug(f"=== SerpAPI Response Debug for '{company_name}' ===")
+                logger.debug(f"Response keys: {list(data.keys())}")
 
                 # Log search metadata
                 if "search_metadata" in data:
                     metadata = data["search_metadata"]
-                    logger.info(f"Search status: {metadata.get('status')}")
-                    logger.info(f"Search ID: {metadata.get('id')}")
-                    logger.info(f"Total time: {metadata.get('total_time_taken')}s")
+                    logger.debug(f"Search status: {metadata.get('status')}")
+                    logger.debug(f"Search ID: {metadata.get('id')}")
+                    logger.debug(f"Total time: {metadata.get('total_time_taken')}s")
 
                 # Log search parameters echo
                 if "search_parameters" in data:
-                    logger.info(f"Search params echo: {data['search_parameters']}")
+                    logger.debug(f"Search params echo: {data['search_parameters']}")
 
                 # Log search information
                 if "search_information" in data:
-                    logger.info(f"Search info: {data['search_information']}")
+                    logger.debug(f"Search info: {data['search_information']}")
 
                 # Check all possible result keys
                 result_keys = ['local_results', 'place_results', 'inline_local', 'organic_results']
@@ -162,18 +165,18 @@ class GoogleMapsSearchService:
                     if key in data:
                         results = data[key]
                         if isinstance(results, list):
-                            logger.info(f"Found {len(results)} items in '{key}'")
+                            logger.debug(f"Found {len(results)} items in '{key}'")
                             if results:
                                 first = results[0]
-                                logger.info(f"First {key} sample: title='{first.get('title')}', "
+                                logger.debug(f"First {key} sample: title='{first.get('title')}', "
                                           f"phone='{first.get('phone')}', website='{first.get('website')}', "
                                           f"address='{first.get('address')}'")
                         elif isinstance(results, dict):
-                            logger.info(f"Found '{key}' (dict) with keys: {list(results.keys())}")
+                            logger.debug(f"Found '{key}' (dict) with keys: {list(results.keys())}")
                     else:
-                        logger.info(f"'{key}' NOT in response")
+                        logger.debug(f"'{key}' NOT in response")
 
-                logger.info(f"=== End SerpAPI Debug ===")
+                logger.debug(f"=== End SerpAPI Debug ===")
 
                 # Check for API errors
                 if "error" in data:
@@ -275,22 +278,22 @@ class GoogleMapsSearchService:
         if place_results:
             if isinstance(place_results, dict):
                 results.append(place_results)
-                logger.info("Found 1 result in 'place_results' (dict)")
+                logger.debug("Found 1 result in 'place_results' (dict)")
             elif isinstance(place_results, list):
                 results.extend(place_results)
-                logger.info(f"Found {len(place_results)} results in 'place_results' (list)")
+                logger.debug(f"Found {len(place_results)} results in 'place_results' (list)")
 
         # Alternative: inline_local (sometimes used for embedded results)
         inline_local = data.get("inline_local", {})
         if isinstance(inline_local, dict) and "results" in inline_local:
             results.extend(inline_local["results"])
-            logger.info(f"Found {len(inline_local['results'])} results in 'inline_local.results'")
+            logger.debug(f"Found {len(inline_local['results'])} results in 'inline_local.results'")
 
         if not results:
             logger.warning(f"No Google Maps results found for {company_name} (checked: local_results, place_results, inline_local)")
             return {}
 
-        logger.info(f"Total {len(results)} Google Maps results to evaluate")
+        logger.debug(f"Total {len(results)} Google Maps results to evaluate")
 
         # Extract company keywords for matching (ignore common suffixes)
         company_keywords = self._extract_company_keywords(company_name)
