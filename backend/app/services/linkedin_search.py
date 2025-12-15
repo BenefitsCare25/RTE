@@ -1,14 +1,19 @@
 """
 LinkedIn Decision Maker Search Service
 
-Finds company decision makers (C-Suite, HR heads, Founders/Directors) via Google search
+Finds company decision makers (CEO, COO, CFO, Founder, HR) via Google search
 using SerpAPI. Avoids direct LinkedIn scraping to comply with LinkedIn ToS.
 
 Search Strategy:
-1. Search Google for LinkedIn profiles: site:linkedin.com/in/ "{company}" (CEO OR Founder)
-2. Parse results to extract name, job title, LinkedIn URL
-3. Score and rank by role priority and relevance
-4. Return top 3 with role diversity
+1. Strategy 1 ONLY: Exact company name match with quotes
+2. Target roles: CEO, COO, CFO, Founder, Managing Director, HR roles
+3. Search queries:
+   - site:linkedin.com/in/ "{company}" (CEO OR COO OR CFO) Singapore
+   - site:linkedin.com/in/ "{company}" (Founder OR "Managing Director") Singapore
+   - site:linkedin.com/in/ "{company}" ("HR Director" OR "HR Manager" OR "Chief People Officer") Singapore
+4. Parse results to extract name, job title, LinkedIn URL
+5. Score and rank by role priority and relevance
+6. Return top 3 with role diversity
 """
 
 import os
@@ -29,17 +34,13 @@ class LinkedInSearchService:
     """
 
     # Role classification with priority scores
+    # Narrowed to CEO, COO, CFO, Founder, and HR only
     ROLE_PATTERNS = {
         'c_suite': {
             'keywords': [
                 'CEO', 'Chief Executive Officer',
                 'COO', 'Chief Operating Officer',
-                'CFO', 'Chief Financial Officer',
-                'CTO', 'Chief Technology Officer',
-                'CMO', 'Chief Marketing Officer',
-                'CPO', 'Chief Product Officer',
-                'CIO', 'Chief Information Officer',
-                'President'
+                'CFO', 'Chief Financial Officer'
             ],
             'score': 100
         },
@@ -60,20 +61,6 @@ class LinkedInSearchService:
                 'People Director', 'Talent Director'
             ],
             'score': 80
-        },
-        'director': {
-            'keywords': [
-                'Director', 'Board Member', 'Executive Director',
-                'Non-Executive Director', 'Board Director'
-            ],
-            'score': 75
-        },
-        'executive': {
-            'keywords': [
-                'VP', 'Vice President', 'SVP', 'Senior Vice President',
-                'General Manager', 'GM', 'Head of', 'Department Head'
-            ],
-            'score': 70
         }
     }
 
@@ -175,12 +162,12 @@ class LinkedInSearchService:
 
     def _generate_search_queries(self, company_name: str) -> List[str]:
         """
-        Generate multiple LinkedIn search queries with fallback strategies.
+        Generate LinkedIn search queries using Strategy 1 only (exact match).
 
-        Uses progressive relaxation:
-        1. Exact full company name (strict)
-        2. Primary company identifier (relaxed)
-        3. Keywords without quotes (most relaxed)
+        Strategy 1: Full company name with quotes (exact match)
+        - Searches for CEO, COO, CFO
+        - Searches for Founder, Managing Director
+        - Searches for HR roles
 
         Args:
             company_name: Company name
@@ -190,36 +177,12 @@ class LinkedInSearchService:
         """
         clean_name = self._clean_company_name(company_name)
 
-        # Extract primary company identifier (first significant word/acronym)
-        # For "ADM ASIA-PACIFIC TRADING" → "ADM"
-        # For "DBS Bank" → "DBS"
-        words = clean_name.split()
-        primary_identifier = words[0] if words else clean_name
-
-        queries = []
-
-        # Strategy 1: Full company name with quotes (exact match)
-        # Only use if company name is substantial (not just 3-letter acronym)
-        if len(clean_name) > 10:
-            queries.extend([
-                f'site:linkedin.com/in/ "{clean_name}" (CEO OR COO OR CFO) Singapore',
-                f'site:linkedin.com/in/ "{clean_name}" (Founder OR "Managing Director") Singapore',
-            ])
-
-        # Strategy 2: Primary identifier + keywords (relaxed - no quotes on company)
-        # This catches cases like "Managing Director at ADM" for "ADM ASIA-PACIFIC TRADING"
-        queries.extend([
-            f'site:linkedin.com/in/ {primary_identifier} (CEO OR COO OR CFO) Singapore',
-            f'site:linkedin.com/in/ {primary_identifier} (Founder OR "Managing Director") Singapore',
-            f'site:linkedin.com/in/ {primary_identifier} ("HR Director" OR "HR Manager" OR "Chief People Officer") Singapore',
-        ])
-
-        # Strategy 3: Full name without quotes (most relaxed)
-        # Allows partial matching for multi-word company names
-        if len(words) > 1:
-            queries.append(
-                f'site:linkedin.com/in/ {clean_name} (CEO OR Founder OR Director) Singapore'
-            )
+        # Strategy 1 ONLY: Full company name with quotes (exact match)
+        queries = [
+            f'site:linkedin.com/in/ "{clean_name}" (CEO OR COO OR CFO) Singapore',
+            f'site:linkedin.com/in/ "{clean_name}" (Founder OR "Managing Director") Singapore',
+            f'site:linkedin.com/in/ "{clean_name}" ("HR Director" OR "HR Manager" OR "Chief People Officer") Singapore',
+        ]
 
         return queries
 
