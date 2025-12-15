@@ -574,20 +574,9 @@ async def enrich_single_company(
                 scraped_email = scrape_result.get('email') if scrape_result else None
 
                 if scraped_email:
-                    # Validate email domain matches website
-                    from app.utils.extractors import ContactExtractor
-                    is_valid = ContactExtractor.validate_email_domain(
-                        scraped_email,
-                        maps_website,
-                        company['name']
-                    )
-
-                    if is_valid:
-                        email = scraped_email
-                        status_parts.append('email from website')
-                        logger.info(f"Found and validated email: {email}")
-                    else:
-                        logger.warning(f"Rejected email {scraped_email} - domain mismatch with {maps_website}")
+                    email = scraped_email
+                    status_parts.append('email from website')
+                    logger.info(f"Found email: {email}")
                 else:
                     logger.info(f"No email found on {maps_website}")
 
@@ -672,21 +661,9 @@ async def enrich_single_company(
                 status_parts.append('phone from web search')
 
             if not email and aggregated.get('email'):
-                # Validate email against source website
-                from app.utils.extractors import ContactExtractor
-                source_website = successful_websites[0] if successful_websites else website
-                is_valid = ContactExtractor.validate_email_domain(
-                    aggregated['email'],
-                    source_website,
-                    company['name']
-                )
-
-                if is_valid:
-                    email = aggregated['email']
-                    status_parts.append('email from web search')
-                    logger.info(f"Found and validated email from web search: {email}")
-                else:
-                    logger.warning(f"Rejected email {aggregated['email']} - failed domain validation against {source_website}")
+                email = aggregated['email']
+                status_parts.append('email from web search')
+                logger.info(f"Found email from web search: {email}")
 
             # Collect all phones
             for p in aggregated.get('all_phones', []):

@@ -107,6 +107,10 @@ DIRECTORY_DOMAINS = [
     'carousell.com',
     'carousell.sg',
     'qoo10.sg',
+    # Company/industry directories (NEW - from Dec 2025 logs)
+    'datalog.co.uk',              # UK company directory (international)
+    'companydata.com',            # Company directory and data provider
+    'bankingandfinance.com.sg',   # Singapore financial industry directory
     # Press release / news aggregators (NOT company websites)
     'mynewsdesk.com',
     'prnewswire.com',
@@ -243,12 +247,14 @@ class SearchService:
         # STRICT common words - only truly generic terms that NEVER identify a company
         # Note: Words like ASIA, ENTERPRISES, HOLDINGS, SERVICES, TRADING are kept
         # because they may be the ONLY identifying part of a company name
+        # SINGAPORE is in strict_common because location names don't identify companies
         strict_common = {'THE', 'AND', 'FOR', 'OF', 'TO', 'IN', 'AT', 'ON', 'BY',
                         'PTE', 'LTD', 'SDN', 'BHD', 'INC', 'LLC',
-                        'COMPANY', 'PRIVATE', 'LIMITED', 'CO'}
+                        'COMPANY', 'PRIVATE', 'LIMITED', 'CO',
+                        'SINGAPORE'}  # Location - always filter, never use for matching
 
         # Secondary common words - only remove if other keywords exist
-        secondary_common = {'ASIA', 'PACIFIC', 'SINGAPORE', 'GLOBAL', 'GROUP',
+        secondary_common = {'ASIA', 'PACIFIC', 'GLOBAL', 'GROUP',
                           'CORPORATION', 'CORP', 'HOLDINGS', 'ENTERPRISES',
                           'SERVICES', 'TRADING', 'INTERNATIONAL'}
 
