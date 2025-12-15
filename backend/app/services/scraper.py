@@ -649,7 +649,7 @@ class WebScraper:
 
         return None
 
-    async def scrape_email_only(self, website: str) -> Dict[str, Optional[str]]:
+    async def scrape_email_only(self, website: str, retry_count: int = 0) -> Dict[str, Optional[str]]:
         """
         Scrape a website specifically for email addresses.
         Used when we already have phone from Google Maps but need email.
@@ -657,10 +657,12 @@ class WebScraper:
         This is a lighter-weight scrape that focuses on:
         1. Main page email extraction
         2. Contact page email extraction
-        3. Memory-limited concurrent contexts
+        3. FlareSolverr fallback on error
+        4. Memory-limited concurrent contexts
 
         Args:
             website: Company website URL
+            retry_count: Current retry attempt (used for FlareSolverr fallback)
 
         Returns:
             Dictionary with 'email' and 'html_content' (first 5KB for validation)
@@ -800,7 +802,19 @@ class WebScraper:
                 logger.error(f"Email scrape error for {website}: {str(e)}")
                 # Ensure context is cleaned up on error
                 self._active_contexts -= 1
-                return {'email': None, 'html_content': None}
+
+            # Try FlareSolverr as last resort on error
+            if self.flaresolverr_url and retry_count == 0:
+                logger.info(f"Attempting FlareSolverr fallback for email scraping: {website}")
+                flaresolverr_result = await self._try_flaresolverr(website)
+                if flaresolverr_result and flaresolverr_result.get('email'):
+                    logger.info(f"✓ Email scraper (FlareSolverr): {flaresolverr_result['email']}")
+                    return {
+                        'email': flaresolverr_result['email'],
+                        'html_content': None  # FlareSolverr doesn't provide raw HTML content
+                    }
+
+            return {'email': None, 'html_content': None}
 
     async def scrape_multiple_companies(
         self,
