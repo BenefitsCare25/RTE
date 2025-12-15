@@ -55,6 +55,11 @@ CLOUDFLARE_INDICATORS = [
 # Memory management limits
 MAX_CONCURRENT_CONTEXTS = 2  # Limit concurrent browser contexts to prevent memory exhaustion
 MAX_COOKIE_CACHE_SIZE = 50  # Clear cookie cache when it exceeds this size
+MAX_CONCURRENT_FLARESOLVERR = 1  # Limit FlareSolverr to 1 request at a time to prevent memory exhaustion
+
+# Global semaphore for FlareSolverr - shared across all WebScraper instances
+# This prevents multiple FlareSolverr requests from running concurrently and exhausting memory
+_flaresolverr_semaphore = asyncio.Semaphore(MAX_CONCURRENT_FLARESOLVERR)
 
 
 class WebScraper:
@@ -320,24 +325,31 @@ class WebScraper:
 
     async def _try_flaresolverr(self, website: str) -> Optional[Dict]:
         """
-        Try to get page content via FlareSolverr as fallback
-        FlareSolverr is a proxy server that solves Cloudflare challenges
+        Try to get page content via FlareSolverr as fallback.
+        FlareSolverr is a proxy server that solves Cloudflare challenges.
+
+        Uses global semaphore to ensure only 1 FlareSolverr request runs at a time,
+        preventing memory exhaustion from multiple concurrent Chrome instances.
         """
         if not self.flaresolverr_url:
             return None
 
-        try:
-            logger.info(f"Attempting FlareSolverr fallback for: {website}")
+        # Use global semaphore to limit concurrent FlareSolverr requests
+        logger.info(f"Waiting for FlareSolverr slot (current active: {MAX_CONCURRENT_FLARESOLVERR - _flaresolverr_semaphore._value})")
+        async with _flaresolverr_semaphore:
+            try:
+                logger.info(f"Attempting FlareSolverr fallback for: {website}")
 
-            async with httpx.AsyncClient(timeout=None) as client:  # No timeout
-                response = await client.post(
-                    self.flaresolverr_url,
-                    json={
-                        "cmd": "request.get",
-                        "url": website,
-                        "maxTimeout": 300000  # 5 min for FlareSolverr challenge
-                    }
-                )
+                # Reduced timeout from 5 min to 2 min - enough for Cloudflare but prevents long waits
+                async with httpx.AsyncClient(timeout=150.0) as client:  # 2.5 min total timeout
+                    response = await client.post(
+                        self.flaresolverr_url,
+                        json={
+                            "cmd": "request.get",
+                            "url": website,
+                            "maxTimeout": 120000  # 2 min for FlareSolverr challenge (reduced from 5 min)
+                        }
+                    )
 
                 if response.status_code == 200:
                     data = response.json()
@@ -360,8 +372,12 @@ class WebScraper:
                     else:
                         logger.warning(f"FlareSolverr failed: {data.get('message', 'Unknown error')}")
 
-        except Exception as e:
-            logger.error(f"FlareSolverr error: {e}")
+            except Exception as e:
+                logger.error(f"FlareSolverr error: {e}")
+            finally:
+                # Small delay to let FlareSolverr clean up Chrome instance before next request
+                # This prevents memory buildup from rapid successive requests
+                await asyncio.sleep(2.0)
 
         return None
 

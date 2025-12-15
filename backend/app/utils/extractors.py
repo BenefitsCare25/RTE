@@ -15,8 +15,9 @@ class ContactExtractor:
         r'\b[689]\d{3}[\s-]?\d{4}\b',
     ]
 
-    # Email pattern
-    EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    # Email pattern - improved to avoid matching image files like flags@2x.png
+    # Requires domain to have at least one letter and proper structure
+    EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b'
 
     # Common email domains to exclude (generic/non-business)
     EXCLUDED_EMAIL_DOMAINS = [
@@ -166,6 +167,73 @@ class ContactExtractor:
 
         return True
 
+    # Common file extensions that are NOT valid email TLDs
+    FILE_EXTENSIONS = [
+        'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico',  # Images
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',  # Documents
+        'zip', 'rar', 'tar', 'gz',  # Archives
+        'mp3', 'mp4', 'avi', 'mov', 'wav',  # Media
+        'js', 'css', 'html', 'xml', 'json',  # Web files
+        'txt', 'csv', 'log',  # Text files
+        'exe', 'dll', 'bin',  # Executables
+    ]
+
+    @staticmethod
+    def is_valid_email(email: str) -> bool:
+        """
+        Validate if an email address has proper structure
+
+        Args:
+            email: Email address string
+
+        Returns:
+            True if valid email structure
+        """
+        if not email or '@' not in email:
+            return False
+
+        try:
+            local, domain = email.split('@', 1)
+
+            # Domain must have at least one dot (domain.tld)
+            if '.' not in domain:
+                return False
+
+            # Split domain into parts
+            domain_parts = domain.split('.')
+
+            # Must have at least 2 parts (domain + tld)
+            if len(domain_parts) < 2:
+                return False
+
+            # Last part (TLD) must be letters only and at least 2 chars
+            tld = domain_parts[-1].lower()
+            if len(tld) < 2 or not tld.isalpha():
+                return False
+
+            # Exclude common file extensions (not valid TLDs)
+            # This prevents matching things like "flags@2x.png" or "icon@3x.jpg"
+            if tld in ContactExtractor.FILE_EXTENSIONS:
+                return False
+
+            # Domain part (before TLD) must contain at least one letter
+            domain_without_tld = '.'.join(domain_parts[:-1])
+            if not any(c.isalpha() for c in domain_without_tld):
+                return False
+
+            # Domain part (before TLD) should be at least 2 characters
+            # This helps filter out patterns like "@2x", "@3x" (retina image suffixes)
+            if len(domain_without_tld) < 2:
+                return False
+
+            # Local part should not be empty
+            if not local or len(local) < 1:
+                return False
+
+            return True
+        except Exception:
+            return False
+
     @staticmethod
     def extract_emails(text: str, prefer_business: bool = True) -> List[str]:
         """
@@ -189,6 +257,11 @@ class ContactExtractor:
         filtered_emails = []
         for email in emails:
             email_lower = email.lower()
+
+            # Validate email structure first
+            if not ContactExtractor.is_valid_email(email_lower):
+                continue
+
             domain = email_lower.split('@')[1]
 
             # Skip directory emails
