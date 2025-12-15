@@ -116,12 +116,12 @@ async def enrich_company_data(
     linkedin_service: LinkedInSearchService = None
 ) -> List[Dict]:
     """
-    Enrich company data with contact information using Google Maps as primary source.
+    Enrich company data with contact information using Google Maps only.
 
-    NEW FLOW:
-    1. Google Maps search (primary) - uses company name + address/postal code
-    2. Web search + scraping (fallback) - if Maps fails
-    3. API fallback (last resort)
+    WORKFLOW:
+    1. Google Maps search - uses company name + address/postal code
+    2. If no website from Google Maps → SKIP (only record phone if available)
+    3. If website found → scrape for email only (phone already from Google Maps)
     4. LinkedIn decision maker search
 
     Args:
@@ -512,11 +512,11 @@ async def enrich_single_company(
     """
     Enrich a single company with contact information.
 
-    NEW FLOW (Google Maps Primary):
+    WORKFLOW:
     1. Search Google Maps using company name + address/postal code
-    2. Get phone and website directly from Maps result
-    3. If website found, scrape it for email only
-    4. Fallback to web search if Maps fails
+    2. Get phone from Google Maps (if available)
+    3. If Google Maps has NO website → SKIP (only record phone, move to LinkedIn)
+    4. If Google Maps HAS website → scrape it for email only
     5. Search LinkedIn for decision makers (C-Suite, HR, Founders)
 
     Args:
@@ -541,7 +541,7 @@ async def enrich_single_company(
     status_parts = []
 
     # ============================================
-    # STEP 1: Google Maps Search (PRIMARY METHOD)
+    # STEP 1: Google Maps Search (PRIMARY & ONLY METHOD)
     # ============================================
     if maps_service:
         logger.info(f"Step 1: Searching Google Maps for {company['name']}")
@@ -565,9 +565,10 @@ async def enrich_single_company(
 
             if maps_website:
                 website = maps_website
+                status_parts.append('website from Google Maps')
 
                 # ============================================
-                # STEP 2: Scrape Website for Email
+                # STEP 2: Scrape Website for Email ONLY
                 # ============================================
                 logger.info(f"Step 2: Scraping {maps_website} for email")
                 scrape_result = await scraper.scrape_email_only(maps_website)
@@ -579,132 +580,18 @@ async def enrich_single_company(
                     logger.info(f"Found email: {email}")
                 else:
                     logger.info(f"No email found on {maps_website}")
-
-            # ============================================
-    # STEP 3: Fallback to Web Search if needed
-    # ============================================
-    # Track all discovered URLs from web search (including directories) for reference
-    all_discovered_urls = []
-
-    # Fallback if we're missing phone, website, OR email
-    # This ensures we try web search even if Google Maps only gave us a phone
-    if not phone or not website or not email:
-        missing = []
-        if not phone:
-            missing.append('phone')
-        if not website:
-            missing.append('website')
-        if not email:
-            missing.append('email')
-        logger.info(f"Step 3: Fallback to web search for {company['name']} (missing: {', '.join(missing)})")
-
-        search_result = await search_service.search_company_websites(
-            company['name'],
-            company['uen'],
-            company['address']
-        )
-
-        # Extract company websites (for scraping) and all discovered URLs (for reference)
-        websites = search_result.get('company_websites', [])
-        all_discovered_urls = search_result.get('all_discovered', [])
-
-        logger.info(f"Web search: {len(websites)} company websites, {len(all_discovered_urls)} total discovered")
-
-        if not websites:
-            # No relevant company websites found - mark status and move on quickly
-            logger.info(f"No relevant company website found for {company['name']}, moving on")
-            status_parts.append('no company website found')
-        elif websites:
-            # Limit websites to scrape to save time and API calls
-            websites_to_scrape = websites[:MAX_WEBSITES_TO_SCRAPE]
-            logger.info(f"Found {len(websites)} company websites, scraping top {len(websites_to_scrape)}")
-
-            # Scrape websites until we have phone + email
-            all_contacts = []
-            successful_websites = []
-            blocked_count = 0
-            have_phone = bool(phone)
-            have_email = bool(email)
-
-            for website_idx, site_url in enumerate(websites_to_scrape, 1):
-                if have_phone and have_email:
-                    logger.info("Already have phone + email, stopping scrape")
-                    break
-
-                logger.info(f"Scraping website {website_idx}/{len(websites_to_scrape)}: {site_url}")
-                contacts = await scraper.scrape_company_contacts(site_url)
-
-                if contacts.get('blocked'):
-                    blocked_count += 1
-                    continue
-
-                got_phone = bool(contacts.get('phone') or contacts.get('all_phones'))
-                got_email = bool(contacts.get('email') or contacts.get('all_emails'))
-
-                if got_phone or got_email:
-                    all_contacts.append(contacts)
-                    successful_websites.append(site_url)
-
-                    if got_phone and not have_phone:
-                        have_phone = True
-                    if got_email and not have_email:
-                        have_email = True
-
-                if not (have_phone and have_email):
-                    await asyncio.sleep(0.5)
-
-            # Aggregate results from web scraping
-            aggregated = _aggregate_contacts(all_contacts)
-
-            if not phone and aggregated.get('phone'):
-                phone = aggregated['phone']
-                status_parts.append('phone from web search')
-
-            if not email and aggregated.get('email'):
-                email = aggregated['email']
-                status_parts.append('email from web search')
-                logger.info(f"Found email from web search: {email}")
-
-            # Collect all phones
-            for p in aggregated.get('all_phones', []):
-                if p and p not in all_phones:
-                    all_phones.append(p)
-
-            # Set website from successful scrapes
-            if not website and successful_websites:
-                website = '\n'.join(successful_websites)
-
-            # Update status for blocked sites
-            if blocked_count > 0:
-                status_parts.append(f'{blocked_count} sites blocked')
+                    status_parts.append('no email on website')
+            else:
+                # No website from Google Maps → SKIP to LinkedIn
+                logger.info(f"No website from Google Maps for {company['name']}, skipping to LinkedIn")
+                status_parts.append('no website from Google Maps')
 
     # ============================================
-    # STEP 4: API Fallback (last resort)
-    # ============================================
-    if not phone and not email:
-        logger.info(f"Step 4: API fallback for {company['name']}")
-        api_result = await api_service.search_company(company['name'], company['uen'])
-
-        if api_result:
-            if api_result.get('phone') and not phone:
-                phone = api_result['phone']
-                if phone not in all_phones:
-                    all_phones.insert(0, phone)
-                status_parts.append('phone from API')
-
-            if api_result.get('email') and not email:
-                email = api_result['email']
-                status_parts.append('email from API')
-
-            if not website and api_result.get('registry_url'):
-                website = api_result['registry_url']
-
-    # ============================================
-    # STEP 5: LinkedIn Decision Maker Search
+    # STEP 3: LinkedIn Decision Maker Search
     # ============================================
     decision_makers = []
     if linkedin_service:
-        logger.info(f"Step 5: Searching LinkedIn for decision makers")
+        logger.info(f"Step 3: Searching LinkedIn for decision makers")
         try:
             decision_makers = await linkedin_service.find_decision_makers(
                 company['name'],
@@ -725,7 +612,7 @@ async def enrich_single_company(
     if has_data:
         status = f"Success ({', '.join(status_parts)})" if status_parts else "Success"
     else:
-        status = "No contact data found"
+        status = "No contact data found - " + ', '.join(status_parts) if status_parts else "No contact data found"
 
     # Ensure phone is in all_phones
     if phone and phone not in all_phones:
@@ -740,7 +627,7 @@ async def enrich_single_company(
         'phone_3': all_phones[2] if len(all_phones) > 2 else '',
         'email': email or '',
         'website': website or '',
-        'discovered_urls': '\n'.join(all_discovered_urls) if all_discovered_urls else '',
+        'discovered_urls': '',  # No longer using web search fallback
         # Decision maker fields
         'dm1_name': decision_makers[0]['name'] if len(decision_makers) > 0 else '',
         'dm1_title': decision_makers[0]['title'] if len(decision_makers) > 0 else '',
