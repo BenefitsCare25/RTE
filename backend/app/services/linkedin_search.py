@@ -118,7 +118,7 @@ class LinkedInSearchService:
             return []
 
         try:
-            logger.info(f"Searching LinkedIn for decision makers: {company_name}")
+            logger.debug(f"Searching LinkedIn for decision makers: {company_name}")
 
             # Collect all decision maker candidates
             all_candidates = []
@@ -143,17 +143,19 @@ class LinkedInSearchService:
                     await asyncio.sleep(0.5)
 
                 except Exception as e:
-                    logger.warning(f"LinkedIn search query failed: {str(e)}")
+                    logger.debug(f"LinkedIn search query failed: {str(e)}")
                     continue
 
             if not all_candidates:
-                logger.info(f"No LinkedIn decision makers found for {company_name}")
+                logger.info(f"✗ LinkedIn: No decision makers found")
                 return []
 
             # Deduplicate, score, and rank
             decision_makers = self._deduplicate_and_rank(all_candidates, max_results)
 
-            logger.info(f"Found {len(decision_makers)} decision makers for {company_name}")
+            # Format result summary
+            roles = [dm['title'] for dm in decision_makers]
+            logger.info(f"✓ LinkedIn: {len(decision_makers)} decision makers ({', '.join(roles)})")
             return decision_makers
 
         except Exception as e:
@@ -545,14 +547,12 @@ class LinkedInSearchService:
 
         for pattern in exclusion_patterns:
             if pattern in text_lower:
-                logger.debug(f"Excluded: Profile contains '{pattern}' indicator")
                 return False
 
         # STEP 2: Extract current company from LinkedIn profile
         extracted_company = self._extract_company_from_linkedin_title(title, snippet)
 
         if not extracted_company:
-            logger.debug("No company extracted from profile - excluding")
             return False
 
         # STEP 3: Calculate similarity between extracted company and target company
@@ -563,7 +563,7 @@ class LinkedInSearchService:
 
         # Strategy A: High similarity match (75%+)
         if similarity >= SIMILARITY_THRESHOLD:
-            logger.info(f"✓ Company match (similarity): '{extracted_company}' vs '{company_name}' ({similarity:.2%})")
+            logger.debug(f"✓ Company match (similarity): '{extracted_company}' vs '{company_name}' ({similarity:.2%})")
             return True
 
         # Strategy B: Abbreviated company name match
@@ -574,19 +574,19 @@ class LinkedInSearchService:
 
         # Check if extracted company is the PRIMARY identifier (first word) of target
         if target_words and norm_extracted == target_words[0]:
-            logger.info(f"✓ Company match (primary identifier): '{extracted_company}' is primary identifier of '{company_name}'")
+            logger.debug(f"✓ Company match (primary identifier): '{extracted_company}' is primary identifier of '{company_name}'")
             return True
 
         # Check if extracted is a complete word/acronym within target
         # e.g., "DBS" should match "DBS Bank Ltd" but not "Subsidiary of DBS"
         if norm_extracted in target_words:
-            logger.info(f"✓ Company match (exact word match): '{extracted_company}' found in '{company_name}'")
+            logger.debug(f"✓ Company match (exact word match): '{extracted_company}' found in '{company_name}'")
             return True
 
         # Strategy C: Extracted company is longer but target is substring
         # e.g., LinkedIn shows "DBS Bank Ltd" but target is "DBS"
         if norm_target in norm_extracted and len(norm_target) >= 3:
-            logger.info(f"✓ Company match (target is substring): '{company_name}' found in '{extracted_company}'")
+            logger.debug(f"✓ Company match (target is substring): '{company_name}' found in '{extracted_company}'")
             return True
 
         logger.debug(f"✗ Company mismatch: '{extracted_company}' vs '{company_name}' (similarity: {similarity:.2%} < {SIMILARITY_THRESHOLD:.0%})")

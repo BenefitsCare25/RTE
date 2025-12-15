@@ -19,7 +19,9 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(dir:*)",
-      "WebFetch(domain:serpapi.com)"
+      "WebFetch(domain:serpapi.com)",
+      "Bash(git config:*)",
+      "Bash(gh auth:*)"
     ],
     "deny": [],
     "ask": []

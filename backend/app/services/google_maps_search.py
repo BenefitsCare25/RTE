@@ -56,14 +56,14 @@ class GoogleMapsSearchService:
             logger.warning("SERPAPI_KEY not configured, skipping Google Maps search")
             return {}
 
-        logger.info(f"Google Maps search starting for: {company_name}")
-        logger.info(f"Address: {address}")
+        logger.debug(f"Google Maps search starting for: {company_name}")
+        logger.debug(f"Address: {address}")
 
         # Extract address components
         postal_code = self._extract_postal_code(address)
         street_name = self._extract_street_name(address)
 
-        logger.info(f"Extracted - Postal: {postal_code}, Street: {street_name}")
+        logger.debug(f"Extracted - Postal: {postal_code}, Street: {street_name}")
 
         # Build query strategies in order of expected effectiveness
         query_strategies = []
@@ -84,19 +84,19 @@ class GoogleMapsSearchService:
 
         # Try each query strategy until we get results
         for idx, query in enumerate(query_strategies):
-            logger.info(f"Query Strategy {idx + 1}/{len(query_strategies)}: {query}")
+            logger.debug(f"Query Strategy {idx + 1}/{len(query_strategies)}: {query}")
 
             result = await self._execute_maps_search(query, company_name, postal_code, address)
 
             if result:
-                logger.info(f"SUCCESS with strategy {idx + 1}: {query}")
+                logger.info(f"✓ Google Maps: {result.get('phone', 'No phone')}, {result.get('website', 'No website')}")
                 return result
 
             # Small delay between queries to avoid rate limiting
             if idx < len(query_strategies) - 1:
                 await asyncio.sleep(0.3)
 
-        logger.warning(f"All {len(query_strategies)} query strategies failed for {company_name}")
+        logger.info(f"✗ Google Maps: No results found")
         return {}
 
     async def _execute_maps_search(
@@ -297,7 +297,7 @@ class GoogleMapsSearchService:
 
         # Extract company keywords for matching (ignore common suffixes)
         company_keywords = self._extract_company_keywords(company_name)
-        logger.info(f"Company keywords for matching: {company_keywords}")
+        logger.debug(f"Company keywords for matching: {company_keywords}")
 
         # Score each result
         scored_results = []
@@ -321,10 +321,10 @@ class GoogleMapsSearchService:
             # Name matching (most important) - STRICTER SCORING
             if company_name_clean.lower() == title_clean.lower():
                 score += 150  # Exact match after cleaning - highest confidence
-                logger.info(f"  Result #{idx+1}: EXACT name match (cleaned)")
+                logger.debug(f"  Result #{idx+1}: EXACT name match (cleaned)")
             elif company_name_lower == title_lower:
                 score += 140  # Exact match
-                logger.info(f"  Result #{idx+1}: EXACT name match")
+                logger.debug(f"  Result #{idx+1}: EXACT name match")
             elif company_name_clean.lower() in title_clean.lower() or title_clean.lower() in company_name_clean.lower():
                 score += 80  # One contains the other (after cleaning)
             elif company_name_lower in title_lower or title_lower in company_name_lower:
@@ -339,25 +339,25 @@ class GoogleMapsSearchService:
 
                     if match_ratio >= 0.5:  # At least 50% of keywords must match
                         score += int(match_ratio * 60)  # Max 60 points for keyword match
-                        logger.info(f"  Result #{idx+1}: Keyword match {matching_keywords} ({match_ratio:.0%})")
+                        logger.debug(f"  Result #{idx+1}: Keyword match {matching_keywords} ({match_ratio:.0%})")
                     else:
                         # Very low keyword match - likely wrong company
                         score += int(match_ratio * 20)  # Max 20 points
-                        logger.info(f"  Result #{idx+1}: LOW keyword match {matching_keywords} ({match_ratio:.0%})")
+                        logger.debug(f"  Result #{idx+1}: LOW keyword match {matching_keywords} ({match_ratio:.0%})")
 
             # Postal code matching (reliable for Singapore)
             # BUT: reduce weight if it looks like a building (company might be IN the building)
             if postal_code and postal_code in result_address:
                 if is_building:
                     score += 20  # Reduced weight for buildings at same address
-                    logger.info(f"  Result #{idx+1}: Postal match but looks like building")
+                    logger.debug(f"  Result #{idx+1}: Postal match but looks like building")
                 else:
                     score += 50  # Good location match (reduced from 80)
 
             # Penalize building/hotel matches - these are often the ADDRESS, not the company
             if is_building:
                 score -= 40
-                logger.info(f"  Result #{idx+1}: PENALTY - looks like building/hotel: {title}")
+                logger.debug(f"  Result #{idx+1}: PENALTY - looks like building/hotel: {title}")
 
             # Has phone number (we want this)
             if result.get("phone"):
@@ -371,7 +371,7 @@ class GoogleMapsSearchService:
             if result.get("rating"):
                 score += 5
 
-            logger.info(f"Result #{idx+1}: '{title}' - Score: {score}")
+            logger.debug(f"Result #{idx+1}: '{title}' - Score: {score}")
 
             scored_results.append((score, result))
 
@@ -386,15 +386,15 @@ class GoogleMapsSearchService:
         MIN_MATCH_SCORE = 70
 
         if best_score < MIN_MATCH_SCORE:
-            logger.warning(f"Best match score ({best_score}) below threshold ({MIN_MATCH_SCORE}), rejecting as likely wrong business")
-            logger.warning(f"  Would have matched: '{best_result.get('title')}'")
+            logger.debug(f"Best match score ({best_score}) below threshold ({MIN_MATCH_SCORE}), rejecting as likely wrong business")
+            logger.debug(f"  Would have matched: '{best_result.get('title')}'")
             return {}
 
         # Log the match
-        logger.info(f"Best match: '{best_result.get('title')}' (score: {best_score})")
-        logger.info(f"  Phone: {best_result.get('phone', 'N/A')}")
-        logger.info(f"  Website: {best_result.get('website', 'N/A')}")
-        logger.info(f"  Address: {best_result.get('address', 'N/A')}")
+        logger.debug(f"Best match: '{best_result.get('title')}' (score: {best_score})")
+        logger.debug(f"  Phone: {best_result.get('phone', 'N/A')}")
+        logger.debug(f"  Website: {best_result.get('website', 'N/A')}")
+        logger.debug(f"  Address: {best_result.get('address', 'N/A')}")
 
         # Extract and return relevant data
         return {

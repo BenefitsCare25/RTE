@@ -406,7 +406,7 @@ class WebScraper:
                 await self.initialize()
                 self._request_count += 1
                 self._active_contexts += 1
-                logger.info(f"Scraping: {website} (request #{self._request_count}, attempt {retry_count + 1}, active contexts: {self._active_contexts})")
+                logger.debug(f"Scraping: {website} (request #{self._request_count}, attempt {retry_count + 1}, active contexts: {self._active_contexts})")
 
                 # Clean up cookie cache if it's getting too large
                 self._cleanup_cookie_cache()
@@ -464,7 +464,7 @@ class WebScraper:
                     await asyncio.sleep(random.uniform(1.5, 3.5))
 
                 # Navigate to website
-                logger.info(f"Loading page: {website}")
+                logger.debug(f"Loading page: {website}")
                 await page.goto(website, wait_until='domcontentloaded', timeout=0)
 
                 # Simulate human behavior immediately
@@ -482,7 +482,7 @@ class WebScraper:
                 is_blocked = is_blocked and len(text_content) < 3000
 
                 if is_blocked:
-                    logger.warning(f"Cloudflare blocking access to {website}")
+                    logger.debug(f"Cloudflare blocking access to {website}")
 
                     # Save any cookies we got (might help on retry)
                     cookies = await context.cookies()
@@ -523,10 +523,10 @@ class WebScraper:
 
                 # Extract contacts from main page
                 main_page_content = await page.content()
-                logger.info(f"Retrieved HTML content, length: {len(main_page_content)} characters")
+                logger.debug(f"Retrieved HTML content, length: {len(main_page_content)} characters")
 
                 contacts = self.extractor.extract_all_contacts(main_page_content)
-                logger.info(f"Main page extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
+                logger.debug(f"Main page extraction: Phones={contacts.get('all_phones', [])}, Emails={contacts.get('all_emails', [])}")
 
                 # Try contact page if EITHER phone OR email is missing
                 # This ensures we get complete contact info even if main page only has partial data
@@ -536,12 +536,12 @@ class WebScraper:
                         missing.append('phone')
                     if not contacts['email']:
                         missing.append('email')
-                    logger.info(f"Missing {', '.join(missing)} on main page, searching for contact page...")
+                    logger.debug(f"Missing {', '.join(missing)} on main page, searching for contact page...")
 
                     contact_page_url = await self._find_contact_page(page, website)
 
                     if contact_page_url:
-                        logger.info(f"Found contact page: {contact_page_url}")
+                        logger.debug(f"Found contact page: {contact_page_url}")
                         await asyncio.sleep(random.uniform(1, 2))
                         await self._simulate_human_behavior(page)
                         try:
@@ -549,16 +549,16 @@ class WebScraper:
                             await asyncio.sleep(1)  # Wait for page to settle
                             contact_page_content = await page.content()
                             contact_page_contacts = self.extractor.extract_all_contacts(contact_page_content)
-                            logger.info(f"Contact page extraction: Phones={contact_page_contacts.get('all_phones', [])}, Emails={contact_page_contacts.get('all_emails', [])}")
+                            logger.debug(f"Contact page extraction: Phones={contact_page_contacts.get('all_phones', [])}, Emails={contact_page_contacts.get('all_emails', [])}")
 
                             # Merge contact page results with main page results
                             # Only fill in missing data, don't overwrite existing
                             if not contacts['phone'] and contact_page_contacts.get('phone'):
                                 contacts['phone'] = contact_page_contacts['phone']
-                                logger.info(f"Got phone from contact page: {contacts['phone']}")
+                                logger.debug(f"Got phone from contact page: {contacts['phone']}")
                             if not contacts['email'] and contact_page_contacts.get('email'):
                                 contacts['email'] = contact_page_contacts['email']
-                                logger.info(f"Got email from contact page: {contacts['email']}")
+                                logger.debug(f"Got email from contact page: {contacts['email']}")
 
                             # Merge all_phones and all_emails lists
                             existing_phones = set(contacts.get('all_phones', []))
@@ -581,7 +581,7 @@ class WebScraper:
                 self._active_contexts -= 1
                 del context
 
-                return {
+                result = {
                     'phone': contacts['phone'],
                     'email': contacts['email'],
                     'website': website,
@@ -589,6 +589,9 @@ class WebScraper:
                     'all_emails': contacts.get('all_emails', []),
                     'blocked': False
                 }
+
+                logger.info(f"✓ Scraper: {result.get('email', 'No email')}")
+                return result
 
             except Exception as e:
                 logger.error(f"Scraping error for {website}: {str(e)}", exc_info=True)
@@ -668,7 +671,7 @@ class WebScraper:
                 await self.initialize()
                 self._request_count += 1
                 self._active_contexts += 1
-                logger.info(f"Scraping for email only: {website} (active contexts: {self._active_contexts})")
+                logger.debug(f"Scraping for email only: {website} (active contexts: {self._active_contexts})")
 
                 # Clean up cookie cache if it's getting too large
                 self._cleanup_cookie_cache()
@@ -727,10 +730,11 @@ class WebScraper:
                 contacts = self.extractor.extract_all_contacts(main_content)
 
                 if contacts.get('email'):
-                    logger.info(f"Found email on main page: {contacts['email']}")
+                    logger.debug(f"Found email on main page: {contacts['email']}")
                     await context.close()
                     self._active_contexts -= 1
                     del context
+                    logger.info(f"✓ Email scraper: {contacts['email']}")
                     return {
                         'email': contacts['email'],
                         'html_content': main_content[:5000]  # First 5KB for validation
@@ -739,7 +743,7 @@ class WebScraper:
                 # Try contact page
                 contact_page_url = await self._find_contact_page(page, website)
                 if contact_page_url:
-                    logger.info(f"Checking contact page for email: {contact_page_url}")
+                    logger.debug(f"Checking contact page for email: {contact_page_url}")
                     try:
                         await asyncio.sleep(random.uniform(0.5, 1.5))
                         await page.goto(contact_page_url, wait_until='networkidle', timeout=30000)
@@ -747,16 +751,17 @@ class WebScraper:
                         contacts = self.extractor.extract_all_contacts(contact_content)
 
                         if contacts.get('email'):
-                            logger.info(f"Found email on contact page: {contacts['email']}")
+                            logger.debug(f"Found email on contact page: {contacts['email']}")
                             await context.close()
                             self._active_contexts -= 1
                             del context
+                            logger.info(f"✓ Email scraper: {contacts['email']}")
                             return {
                                 'email': contacts['email'],
                                 'html_content': contact_content[:5000]  # First 5KB for validation
                             }
                     except Exception as e:
-                        logger.warning(f"Failed to load contact page: {e}")
+                        logger.debug(f"Failed to load contact page: {e}")
 
                 # Try common contact page patterns
                 common_patterns = ['/contact', '/contact-us', '/about', '/about-us']
@@ -772,10 +777,11 @@ class WebScraper:
                                 pattern_content = await page.content()
                                 contacts = self.extractor.extract_all_contacts(pattern_content)
                                 if contacts.get('email'):
-                                    logger.info(f"Found email at {pattern}: {contacts['email']}")
+                                    logger.debug(f"Found email at {pattern}: {contacts['email']}")
                                     await context.close()
                                     self._active_contexts -= 1
                                     del context
+                                    logger.info(f"✓ Email scraper: {contacts['email']}")
                                     return {
                                         'email': contacts['email'],
                                         'html_content': pattern_content[:5000]  # First 5KB for validation
@@ -787,7 +793,7 @@ class WebScraper:
                 await context.close()
                 self._active_contexts -= 1
                 del context
-                logger.info(f"No email found on {website}")
+                logger.info(f"✗ Email scraper: No email found")
                 return {'email': None, 'html_content': None}
 
             except Exception as e:

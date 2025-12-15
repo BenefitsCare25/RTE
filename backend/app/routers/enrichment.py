@@ -532,7 +532,7 @@ async def enrich_single_company(
     Returns:
         Enriched company dictionary
     """
-    logger.info(f"Processing company {idx + 1}/{total}: {company['name']}")
+    logger.info(f"\n[{idx + 1}/{total}] {company['name']}")
 
     phone = None
     email = None
@@ -544,7 +544,6 @@ async def enrich_single_company(
     # STEP 1: Google Maps Search (PRIMARY & ONLY METHOD)
     # ============================================
     if maps_service:
-        logger.info(f"Step 1: Searching Google Maps for {company['name']}")
         maps_result = await maps_service.search_business(
             company['name'],
             company['address'],
@@ -554,9 +553,6 @@ async def enrich_single_company(
         if maps_result:
             maps_phone = maps_result.get('phone')
             maps_website = maps_result.get('website')
-            match_score = maps_result.get('match_score', 0)
-
-            logger.info(f"Google Maps result: Phone={maps_phone}, Website={maps_website}, Score={match_score}")
 
             if maps_phone:
                 phone = maps_phone
@@ -570,20 +566,16 @@ async def enrich_single_company(
                 # ============================================
                 # STEP 2: Scrape Website for Email ONLY
                 # ============================================
-                logger.info(f"Step 2: Scraping {maps_website} for email")
                 scrape_result = await scraper.scrape_email_only(maps_website)
                 scraped_email = scrape_result.get('email') if scrape_result else None
 
                 if scraped_email:
                     email = scraped_email
                     status_parts.append('email from website')
-                    logger.info(f"Found email: {email}")
                 else:
-                    logger.info(f"No email found on {maps_website}")
                     status_parts.append('no email on website')
             else:
                 # No website from Google Maps → SKIP to LinkedIn
-                logger.info(f"No website from Google Maps for {company['name']}, skipping to LinkedIn")
                 status_parts.append('no website from Google Maps')
 
     # ============================================
@@ -591,7 +583,6 @@ async def enrich_single_company(
     # ============================================
     decision_makers = []
     if linkedin_service:
-        logger.info(f"Step 3: Searching LinkedIn for decision makers")
         try:
             decision_makers = await linkedin_service.find_decision_makers(
                 company['name'],
@@ -599,10 +590,9 @@ async def enrich_single_company(
             )
 
             if decision_makers:
-                logger.info(f"Found {len(decision_makers)} decision makers")
                 status_parts.append(f'{len(decision_makers)} decision makers found')
         except Exception as e:
-            logger.warning(f"LinkedIn search failed: {str(e)}")
+            logger.debug(f"LinkedIn search failed: {str(e)}")
 
     # ============================================
     # BUILD FINAL RESULT
@@ -617,6 +607,9 @@ async def enrich_single_company(
     # Ensure phone is in all_phones
     if phone and phone not in all_phones:
         all_phones.insert(0, phone)
+
+    # Log final result summary
+    logger.info(f"  Result: Phone={phone or 'None'}, Email={email or 'None'}, DMs={len(decision_makers)}")
 
     return {
         'name': company['name'],
